@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ChevronDown, Download, FileSpreadsheet, FileText, RefreshCw, Search } from 'lucide-react';
 import type { AuditLog } from '../types';
+import { toast } from './Toaster';
 
 interface AuditLogsViewProps {
   onGoToDispatch: () => void;
@@ -46,10 +47,12 @@ export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
     setLoading(true);
     try {
       const res = await fetch('/api/audit');
+      if (!res.ok) throw new Error('Server returned an error');
       const data = await res.json();
       setLogs(Array.isArray(data) ? data : []);
     } catch {
       setLogs([]);
+      toast.error('Failed to load audit logs', 'Unable to query SQLite audit history.');
     } finally {
       setLoading(false);
     }
@@ -127,6 +130,7 @@ export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
     const csv = `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`;
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     triggerDownload(blob, `NSSF_Compliance_Audit_${new Date().toISOString().slice(0, 10)}.csv`);
+    toast.success('CSV audit log exported', `${filteredLogs.length} compliance record(s) downloaded.`);
   };
 
   const exportExcel = () => {
@@ -233,6 +237,10 @@ export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
 
     const blob = new Blob([workbookXml], { type: 'application/vnd.ms-excel;charset=utf-8' });
     triggerDownload(blob, `NSSF_Compliance_Audit_${dateStamp}.xls`);
+    toast.success(
+      'MS-Excel workbook exported',
+      `${filteredLogs.length} compliance record(s) downloaded as .xls.`
+    );
   };
 
   return (

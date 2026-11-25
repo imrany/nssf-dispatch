@@ -1,5 +1,9 @@
 import crypto from 'node:crypto';
-import type { AppSettings } from './db.ts';
+import {
+  getWhatsAppSession,
+  saveWhatsAppSession,
+  type AppSettings,
+} from './db.ts';
 import type { StatementMeta } from './pdfEngine.ts';
 import { buildOfficialNssfMessage } from './mailer.ts';
 
@@ -206,6 +210,9 @@ export interface WhatsAppQrResponse {
   sessionCode: string;
   qrSvg: string;
   deviceName: string;
+  bridgeUrl: string;
+  pairedPhone: string;
+  pairedAt: string;
 }
 
 function validateBridgeUrl(rawUrl: string): URL {
@@ -216,36 +223,194 @@ function validateBridgeUrl(rawUrl: string): URL {
   return parsed;
 }
 
-export async function fetchWhatsAppQr(cfg: AppSettings): Promise<WhatsAppQrResponse> {
-  const sessionCode = `NSSF-WA-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+function createFreshSessionCode(): string {
+  return `NSSF-WA-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+}
+
+function nowFormatted(): string {
+  return new Date().toISOString().replace('T', ' ').slice(0, 19);
+}
+
+export async function fetchWhatsAppQr(
+  cfg: AppSettings,
+  forceRefresh = false
+): Promise<WhatsAppQrResponse> {
+  const existing = getWhatsAppSession();
+  const baseSessionCode =
+    !forceRefresh && existing?.sessionCode ? existing.sessionCode : createFreshSessionCode();
 
   try {
     const bridgeUrl = validateBridgeUrl(cfg.whatsappBridgeUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
-    const resp = await fetch(`${bridgeUrl.origin}/qr`, { signal: controller.signal });
+    const resp = await fetch(
+      `${bridgeUrl.origin}/qr${forceRefresh ? '?refresh=1' : ''}`,
+      { signal: controller.signal }
+    );
     clearTimeout(timer);
 
     if (resp.ok) {
-      const data = (await resp.json()) as { paired?: boolean; qrSvg?: string; qrText?: string };
-      return {
-        paired: Boolean(data.paired ?? cfg.whatsappPaired),
-        bridgeReachable: true,
+      const data = (await resp.json()) as {
+        paired?: boolean;
+        qrSvg?: string;
+        qrText?: string;
+        sessionCode?: string;
+        phone?: string;
+        pairedPhone?: string;
+      };
+      const sessionCode = data.sessionCode || baseSessionCode;
+      const qrPayload = data.qrText || `nssf://wa-link/${sessionCode}`;
+      const qrSvg = data.qrSvg || generateQrSvg(qrPayload);
+      const isPaired = Boolean(data.paired);
+      const pairedPhone = data.pairedPhone || data.phone || existing?.pairedPhone || '';
+      const pairedAt = isPaired ? existing?.pairedAt || nowFormatted() : '';
+
+      const saved = saveWhatsAppSession({
         sessionCode,
-        qrSvg: data.qrSvg || generateQrSvg(data.qrText || `nssf://wa-link/${sessionCode}`),
+        qrPayload,
+        qrSvg,
+        paired: isPaired,
         deviceName: cfg.whatsappDeviceName,
+        bridgeUrl: cfg.whatsappBridgeUrl,
+        bridgeReachable: true,
+        pairedPhone,
+        pairedAt,
+      });
+
+      return {
+        paired: saved.paired,
+        bridgeReachable: saved.bridgeReachable,
+        sessionCode: saved.sessionCode,
+        qrSvg: saved.qrSvg,
+        deviceName: saved.deviceName,
+        bridgeUrl: saved.bridgeUrl,
+        pairedPhone: saved.pairedPhone,
+        pairedAt: saved.pairedAt,
       };
     }
   } catch {
-    // Bridge sidecar not running locally; generate fresh desk pairing QR matrix
+    // Bridge sidecar not running locally; read/persist SQLite QR session state
   }
 
-  return {
-    paired: cfg.whatsappPaired,
-    bridgeReachable: false,
-    sessionCode,
-    qrSvg: generateQrSvg(`https://nssfdigital.enssf.co.ke/wa-pair?s=${sessionCode}`),
+  if (!forceRefresh && existing) {
+    const saved = saveWhatsAppSession({
+      sessionCode: existing.sessionCode,
+      qrPayload: existing.qrPayload,
+      qrSvg: existing.qrSvg,
+      paired: existing.paired,
+      deviceName: cfg.whatsappDeviceName,
+      bridgeUrl: cfg.whatsappBridgeUrl,
+      bridgeReachable: false,
+      pairedPhone: existing.pairedPhone,
+      pairedAt: existing.pairedAt,
+    });
+    return {
+      paired: saved.paired,
+      bridgeReachable: saved.bridgeReachable,
+      sessionCode: saved.sessionCode,
+      qrSvg: saved.qrSvg,
+      deviceName: saved.deviceName,
+      bridgeUrl: saved.bridgeUrl,
+      pairedPhone: saved.pairedPhone,
+      pairedAt: saved.pairedAt,
+    };
+  }
+
+  const qrPayload = `https://nssfdigital.enssf.co.ke/wa-pair?s=${baseSessionCode}`;
+  const saved = saveWhatsAppSession({
+    sessionCode: baseSessionCode,
+    qrPayload,
+    qrSvg: generateQrSvg(qrPayload),
+    paired: false,
     deviceName: cfg.whatsappDeviceName,
+    bridgeUrl: cfg.whatsappBridgeUrl,
+    bridgeReachable: false,
+    pairedPhone: '',
+    pairedAt: '',
+  });
+
+  return {
+    paired: saved.paired,
+    bridgeReachable: saved.bridgeReachable,
+    sessionCode: saved.sessionCode,
+    qrSvg: saved.qrSvg,
+    deviceName: saved.deviceName,
+    bridgeUrl: saved.bridgeUrl,
+    pairedPhone: saved.pairedPhone,
+    pairedAt: saved.pairedAt,
+  };
+}
+
+export function confirmWhatsAppPairingInDb(
+  cfg: AppSettings,
+  sessionCode: string,
+  pairedPhone = ''
+): WhatsAppQrResponse | null {
+  const existing = getWhatsAppSession();
+  if (!existing) return null;
+  if (sessionCode && existing.sessionCode !== sessionCode) return null;
+
+  const saved = saveWhatsAppSession({
+    sessionCode: existing.sessionCode,
+    qrPayload: existing.qrPayload,
+    qrSvg: existing.qrSvg,
+    paired: true,
+    deviceName: cfg.whatsappDeviceName,
+    bridgeUrl: cfg.whatsappBridgeUrl,
+    bridgeReachable: existing.bridgeReachable,
+    pairedPhone: pairedPhone || existing.pairedPhone,
+    pairedAt: existing.pairedAt || nowFormatted(),
+  });
+
+  return {
+    paired: saved.paired,
+    bridgeReachable: saved.bridgeReachable,
+    sessionCode: saved.sessionCode,
+    qrSvg: saved.qrSvg,
+    deviceName: saved.deviceName,
+    bridgeUrl: saved.bridgeUrl,
+    pairedPhone: saved.pairedPhone,
+    pairedAt: saved.pairedAt,
+  };
+}
+
+export async function unlinkWhatsAppSession(cfg: AppSettings): Promise<WhatsAppQrResponse> {
+  try {
+    const bridgeUrl = validateBridgeUrl(cfg.whatsappBridgeUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1500);
+    await fetch(`${bridgeUrl.origin}/logout`, {
+      method: 'POST',
+      signal: controller.signal,
+    }).catch(() => undefined);
+    clearTimeout(timer);
+  } catch {
+    // Ignore unreachable bridge during local unlink
+  }
+
+  const nextCode = createFreshSessionCode();
+  const nextPayload = `https://nssfdigital.enssf.co.ke/wa-pair?s=${nextCode}`;
+  const saved = saveWhatsAppSession({
+    sessionCode: nextCode,
+    qrPayload: nextPayload,
+    qrSvg: generateQrSvg(nextPayload),
+    paired: false,
+    deviceName: cfg.whatsappDeviceName,
+    bridgeUrl: cfg.whatsappBridgeUrl,
+    bridgeReachable: false,
+    pairedPhone: '',
+    pairedAt: '',
+  });
+
+  return {
+    paired: saved.paired,
+    bridgeReachable: saved.bridgeReachable,
+    sessionCode: saved.sessionCode,
+    qrSvg: saved.qrSvg,
+    deviceName: saved.deviceName,
+    bridgeUrl: saved.bridgeUrl,
+    pairedPhone: saved.pairedPhone,
+    pairedAt: saved.pairedAt,
   };
 }
 

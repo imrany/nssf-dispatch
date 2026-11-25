@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { AppSettings, DispatchChannel, DispatchReceipt, StatementMeta } from '../types';
 import { NssfLogo } from './NssfLogo';
+import { toast } from './Toaster';
 
 interface DispatchWorkspaceProps {
   settings: AppSettings;
@@ -77,11 +78,15 @@ export function DispatchWorkspace({
     setErrorMsg('');
 
     if (!memberNo.trim()) {
-      setErrorMsg('Please enter the member NSSF Number.');
+      const msg = 'Please enter the member NSSF Number.';
+      setErrorMsg(msg);
+      toast.warning('Missing Member Number', msg);
       return;
     }
     if (!file) {
-      setErrorMsg('Please upload the member statement PDF.');
+      const msg = 'Please upload the member statement PDF.';
+      setErrorMsg(msg);
+      toast.warning('No PDF attached', msg);
       return;
     }
 
@@ -94,15 +99,23 @@ export function DispatchWorkspace({
       const res = await fetch('/api/validate', { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok || !data.ok) {
+        const msg = data.error || 'Statement validation failed.';
         setValidatedMeta(null);
-        setErrorMsg(data.error || 'Statement validation failed.');
+        setErrorMsg(msg);
+        toast.error('Statement validation failed', msg);
       } else {
         setValidatedMeta(data.meta);
         setPredictedFilename(data.renamedFile || '');
+        toast.success(
+          'Statement verified',
+          `${data.meta.memberName} (${data.meta.memberNo}) matched successfully.`
+        );
         setStep('confirm');
       }
     } catch {
-      setErrorMsg('Unable to communicate with the NSSF validation service.');
+      const msg = 'Unable to communicate with the NSSF validation service.';
+      setErrorMsg(msg);
+      toast.error('Validation service error', msg);
     } finally {
       setValidating(false);
     }
@@ -129,12 +142,20 @@ export function DispatchWorkspace({
       const res = await fetch('/api/dispatch', { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setErrorMsg(data.error || 'Dispatch failed.');
+        const msg = data.error || 'Dispatch failed.';
+        setErrorMsg(msg);
+        toast.error('Statement dispatch failed', msg);
       } else {
+        toast.success(
+          data.deliveryMode === 'live' ? 'Statement dispatched' : 'Statement packaged (Preview)',
+          `${data.renamedFile} encrypted and logged to SQLite.`
+        );
         onSuccess(data);
       }
     } catch {
-      setErrorMsg('Network error communicating with the NSSF Dispatch Server.');
+      const msg = 'Network error communicating with the NSSF Dispatch Server.';
+      setErrorMsg(msg);
+      toast.error('Network error', msg);
     } finally {
       setSubmitting(false);
     }
@@ -146,11 +167,15 @@ export function DispatchWorkspace({
       candidate.type === 'application/pdf' ||
       candidate.name.toLowerCase().endsWith('.pdf');
     if (!isPdf) {
-      setErrorMsg(`"${candidate.name}" is not a PDF file. Please drop a valid NSSF statement PDF.`);
+      const msg = `"${candidate.name}" is not a PDF file. Please drop a valid NSSF statement PDF.`;
+      setErrorMsg(msg);
+      toast.warning('Unsupported file format', msg);
       return;
     }
     if (candidate.size > 15 * 1024 * 1024) {
-      setErrorMsg('Statement PDF exceeds the 15 MB maximum upload size.');
+      const msg = 'Statement PDF exceeds the 15 MB maximum upload size.';
+      setErrorMsg(msg);
+      toast.warning('File too large', msg);
       return;
     }
     setErrorMsg('');

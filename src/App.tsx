@@ -5,6 +5,7 @@ import { DispatchSuccess } from './components/DispatchSuccess';
 import { DispatchWorkspace } from './components/DispatchWorkspace';
 import { Header } from './components/Header';
 import { SettingsView } from './components/SettingsView';
+import { Toaster } from './components/Toaster';
 import type { ActiveTab, AppSettings, DispatchReceipt } from './types';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -103,6 +104,7 @@ export default function App() {
             <span>Social Security House, Bishops Road, Nairobi · USSD *303#</span>
           </div>
         </footer>
+        <Toaster />
       </div>
     </MotionConfig>
   );

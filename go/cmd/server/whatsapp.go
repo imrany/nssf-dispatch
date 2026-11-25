@@ -17,6 +17,9 @@ type WhatsAppQRResponse struct {
 	SessionCode     string `json:"sessionCode"`
 	QRSvg           string `json:"qrSvg"`
 	DeviceName      string `json:"deviceName"`
+	BridgeURL       string `json:"bridgeUrl"`
+	PairedPhone     string `json:"pairedPhone"`
+	PairedAt        string `json:"pairedAt"`
 }
 
 func generateFallbackQRSvg(sessionCode string) string {
@@ -33,37 +36,131 @@ func generateFallbackQRSvg(sessionCode string) string {
 	</svg>`, sessionCode)
 }
 
-func FetchWhatsAppQR(cfg AppSettings) WhatsAppQRResponse {
-	sessionCode := "NSSF-WA-" + strings.ToUpper(randomHex(6))
+func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
+	existing, _ := GetWhatsAppSession()
+	baseCode := "NSSF-WA-" + strings.ToUpper(randomHex(6))
+	if !forceRefresh && existing != nil && existing.SessionCode != "" {
+		baseCode = existing.SessionCode
+	}
+
 	if parsed, err := url.Parse(cfg.WhatsAppBridgeURL); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
 		client := &http.Client{Timeout: 2 * time.Second}
-		resp, err := client.Get(strings.TrimRight(cfg.WhatsAppBridgeURL, "/") + "/qr")
+		suffix := "/qr"
+		if forceRefresh {
+			suffix = "/qr?refresh=1"
+		}
+		resp, err := client.Get(strings.TrimRight(cfg.WhatsAppBridgeURL, "/") + suffix)
 		if err == nil {
 			defer resp.Body.Close()
 			if resp.StatusCode == 200 {
 				var bridgeResp struct {
-					Paired bool   `json:"paired"`
-					QRSvg  string `json:"qrSvg"`
+					Paired      bool   `json:"paired"`
+					QRSvg       string `json:"qrSvg"`
+					QRText      string `json:"qrText"`
+					SessionCode string `json:"sessionCode"`
+					Phone       string `json:"phone"`
+					PairedPhone string `json:"pairedPhone"`
 				}
-				if json.NewDecoder(resp.Body).Decode(&bridgeResp) == nil && bridgeResp.QRSvg != "" {
-					return WhatsAppQRResponse{
-						Paired:          bridgeResp.Paired || cfg.WhatsAppPaired,
-						BridgeReachable: true,
-						SessionCode:     sessionCode,
-						QRSvg:           bridgeResp.QRSvg,
+				if json.NewDecoder(resp.Body).Decode(&bridgeResp) == nil {
+					code := defaultStr(bridgeResp.SessionCode, baseCode)
+					svg := defaultStr(bridgeResp.QRSvg, generateFallbackQRSvg(code))
+					payload := defaultStr(bridgeResp.QRText, "nssf://wa-link/"+code)
+					phone := defaultStr(bridgeResp.PairedPhone, bridgeResp.Phone)
+					pairedAt := ""
+					if bridgeResp.Paired {
+						if existing != nil && existing.PairedAt != "" {
+							pairedAt = existing.PairedAt
+						} else {
+							pairedAt = time.Now().Format("2006-01-02 15:04:05")
+						}
+					}
+					saved, _ := SaveWhatsAppSession(WhatsAppSessionRecord{
+						SessionCode:     code,
+						QRPayload:       payload,
+						QRSvg:           svg,
+						Paired:          bridgeResp.Paired,
 						DeviceName:      cfg.WhatsAppDeviceName,
+						BridgeURL:       cfg.WhatsAppBridgeURL,
+						BridgeReachable: true,
+						PairedPhone:     phone,
+						PairedAt:        pairedAt,
+					})
+					if saved != nil {
+						return WhatsAppQRResponse{
+							Paired:          saved.Paired,
+							BridgeReachable: saved.BridgeReachable,
+							SessionCode:     saved.SessionCode,
+							QRSvg:           saved.QRSvg,
+							DeviceName:      saved.DeviceName,
+							BridgeURL:       saved.BridgeURL,
+							PairedPhone:     saved.PairedPhone,
+							PairedAt:        saved.PairedAt,
+						}
 					}
 				}
 			}
 		}
 	}
 
-	return WhatsAppQRResponse{
-		Paired:          cfg.WhatsAppPaired,
-		BridgeReachable: false,
-		SessionCode:     sessionCode,
-		QRSvg:           generateFallbackQRSvg(sessionCode),
+	if !forceRefresh && existing != nil {
+		return WhatsAppQRResponse{
+			Paired:          existing.Paired,
+			BridgeReachable: false,
+			SessionCode:     existing.SessionCode,
+			QRSvg:           existing.QRSvg,
+			DeviceName:      cfg.WhatsAppDeviceName,
+			BridgeURL:       cfg.WhatsAppBridgeURL,
+			PairedPhone:     existing.PairedPhone,
+			PairedAt:        existing.PairedAt,
+		}
+	}
+
+	payload := "https://nssfdigital.enssf.co.ke/wa-pair?s=" + baseCode
+	svg := generateFallbackQRSvg(baseCode)
+	_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
+		SessionCode:     baseCode,
+		QRPayload:       payload,
+		QRSvg:           svg,
+		Paired:          false,
 		DeviceName:      cfg.WhatsAppDeviceName,
+		BridgeURL:       cfg.WhatsAppBridgeURL,
+		BridgeReachable: false,
+	})
+
+	return WhatsAppQRResponse{
+		Paired:          false,
+		BridgeReachable: false,
+		SessionCode:     baseCode,
+		QRSvg:           svg,
+		DeviceName:      cfg.WhatsAppDeviceName,
+		BridgeURL:       cfg.WhatsAppBridgeURL,
+	}
+}
+
+func UnlinkWhatsAppSession(cfg AppSettings) WhatsAppQRResponse {
+	if parsed, err := url.Parse(cfg.WhatsAppBridgeURL); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		client := &http.Client{Timeout: 1500 * time.Millisecond}
+		_, _ = client.Post(strings.TrimRight(cfg.WhatsAppBridgeURL, "/")+"/logout", "application/json", nil)
+	}
+	nextCode := "NSSF-WA-" + strings.ToUpper(randomHex(6))
+	payload := "https://nssfdigital.enssf.co.ke/wa-pair?s=" + nextCode
+	svg := generateFallbackQRSvg(nextCode)
+	_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
+		SessionCode:     nextCode,
+		QRPayload:       payload,
+		QRSvg:           svg,
+		Paired:          false,
+		DeviceName:      cfg.WhatsAppDeviceName,
+		BridgeURL:       cfg.WhatsAppBridgeURL,
+		BridgeReachable: false,
+	})
+	return WhatsAppQRResponse{
+		Paired:          false,
+		BridgeReachable: false,
+		SessionCode:     nextCode,
+		QRSvg:           svg,
+		DeviceName:      cfg.WhatsAppDeviceName,
+		BridgeURL:       cfg.WhatsAppBridgeURL,
 	}
 }
 

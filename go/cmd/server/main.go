@@ -257,19 +257,44 @@ func main() {
 
 	mux.HandleFunc("/api/whatsapp/qr", func(w http.ResponseWriter, r *http.Request) {
 		cfg, _ := GetRawSettings()
-		writeJSON(w, 200, FetchWhatsAppQR(cfg))
+		refresh := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
+		qrData := FetchWhatsAppQR(cfg, refresh)
+		pub, _ := GetPublicSettings()
+		writeJSON(w, 200, map[string]any{
+			"paired":          qrData.Paired,
+			"bridgeReachable": qrData.BridgeReachable,
+			"sessionCode":     qrData.SessionCode,
+			"qrSvg":           qrData.QRSvg,
+			"deviceName":      qrData.DeviceName,
+			"bridgeUrl":       qrData.BridgeURL,
+			"pairedPhone":     qrData.PairedPhone,
+			"pairedAt":        qrData.PairedAt,
+			"settings":        pub,
+		})
 	})
 
-	mux.HandleFunc("/api/whatsapp/pair", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Paired bool `json:"paired"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+	mux.HandleFunc("/api/whatsapp/status", func(w http.ResponseWriter, r *http.Request) {
 		cfg, _ := GetRawSettings()
-		cfg.WhatsAppPaired = body.Paired
-		_ = SaveSettings(cfg)
+		qrData := FetchWhatsAppQR(cfg, false)
 		pub, _ := GetPublicSettings()
-		writeJSON(w, 200, map[string]any{"ok": true, "paired": body.Paired, "settings": pub})
+		writeJSON(w, 200, map[string]any{
+			"paired":          qrData.Paired,
+			"bridgeReachable": qrData.BridgeReachable,
+			"sessionCode":     qrData.SessionCode,
+			"qrSvg":           qrData.QRSvg,
+			"deviceName":      qrData.DeviceName,
+			"bridgeUrl":       qrData.BridgeURL,
+			"pairedPhone":     qrData.PairedPhone,
+			"pairedAt":        qrData.PairedAt,
+			"settings":        pub,
+		})
+	})
+
+	mux.HandleFunc("/api/whatsapp/unlink", func(w http.ResponseWriter, r *http.Request) {
+		cfg, _ := GetRawSettings()
+		qrData := UnlinkWhatsAppSession(cfg)
+		pub, _ := GetPublicSettings()
+		writeJSON(w, 200, map[string]any{"ok": true, "qrData": qrData, "settings": pub})
 	})
 
 	mux.HandleFunc("/api/audit", func(w http.ResponseWriter, r *http.Request) {

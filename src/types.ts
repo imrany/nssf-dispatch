@@ -74,6 +74,9 @@ export interface WhatsAppQrData {
   sessionCode: string;
   qrSvg: string;
   deviceName: string;
+  bridgeUrl?: string;
+  pairedPhone?: string;
+  pairedAt?: string;
 }
 
 export interface AuditLog {

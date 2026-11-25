@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   AlertCircle,
@@ -9,8 +9,10 @@ import {
   Save,
   Server,
   Smartphone,
+  Trash2,
 } from 'lucide-react';
 import type { AppSettings, WhatsAppQrData } from '../types';
+import { toast } from './Toaster';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -28,27 +30,77 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
 
   const [qrData, setQrData] = useState<WhatsAppQrData | null>(null);
   const [loadingQr, setLoadingQr] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
 
   useEffect(() => {
     setForm({ ...settings, smtpPass: '' });
   }, [settings]);
 
-  const loadQr = async () => {
-    setLoadingQr(true);
-    try {
-      const res = await fetch('/api/whatsapp/qr');
-      const data = (await res.json()) as WhatsAppQrData;
-      setQrData(data);
-    } catch {
-      setQrData(null);
-    } finally {
-      setLoadingQr(false);
-    }
-  };
+  const isPaired = qrData ? qrData.paired : form.whatsappPaired;
+
+  const loadQr = useCallback(
+    async (refresh = false) => {
+      setLoadingQr(true);
+      try {
+        const res = await fetch(refresh ? '/api/whatsapp/qr?refresh=1' : '/api/whatsapp/qr');
+        if (!res.ok) throw new Error('Unable to load WhatsApp QR code');
+        const data = (await res.json()) as WhatsAppQrData & { settings?: AppSettings };
+        setQrData(data);
+        if (data.settings && data.settings.whatsappPaired !== settings.whatsappPaired) {
+          onSettingsUpdated(data.settings);
+        }
+        if (refresh) {
+          toast.success('WhatsApp QR refreshed', 'Scan the new QR code using WhatsApp Linked Devices.');
+        }
+      } catch {
+        setQrData(null);
+        if (refresh) {
+          toast.error('QR refresh failed', 'Could not fetch a new WhatsApp QR code from server.');
+        }
+      } finally {
+        setLoadingQr(false);
+      }
+    },
+    [onSettingsUpdated, settings.whatsappPaired]
+  );
 
   useEffect(() => {
-    loadQr();
-  }, []);
+    loadQr(false);
+  }, [loadQr]);
+
+  // Poll /api/whatsapp/status every 5 seconds while device is not yet paired
+  useEffect(() => {
+    if (isPaired) return;
+
+    let cancelled = false;
+    const pollStatus = async () => {
+      try {
+        const res = await fetch('/api/whatsapp/status');
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as WhatsAppQrData & { settings?: AppSettings };
+        if (cancelled) return;
+        setQrData(data);
+        if (data.paired) {
+          if (data.settings) {
+            onSettingsUpdated(data.settings);
+          }
+          setForm((prev) => ({ ...prev, whatsappPaired: true }));
+          toast.success(
+            'WhatsApp device paired',
+            'Linked device session confirmed and stored in SQLite.'
+          );
+        }
+      } catch {
+        // Keep polling quietly on transient network blips
+      }
+    };
+
+    const timer = setInterval(pollStatus, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isPaired, onSettingsUpdated]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,14 +116,31 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setSaveError(data.error || 'Failed to save settings.');
+        const msg = data.error || 'Failed to save settings.';
+        setSaveError(msg);
+        toast.error('Failed to save configuration', msg);
       } else {
         onSettingsUpdated(data.settings);
-        setSaveNotice('System configuration saved to SQLite database.');
+        const msg = 'System configuration saved to SQLite database.';
+        setSaveNotice(msg);
+        toast.success('Settings saved', msg);
+        if (!form.emailEnabled && !form.whatsappEnabled) {
+          toast.warning(
+            'All dispatch channels disabled',
+            'Staff cannot send statements until Email or WhatsApp is enabled.'
+          );
+        } else if (form.deliveryMode === 'live' && form.whatsappEnabled && !isPaired) {
+          toast.warning(
+            'WhatsApp device not yet paired',
+            'Scan the WhatsApp QR code before sending live WhatsApp statements.'
+          );
+        }
         setTimeout(() => setSaveNotice(''), 4000);
       }
     } catch {
-      setSaveError('Network error saving settings.');
+      const msg = 'Network error saving settings.';
+      setSaveError(msg);
+      toast.error('Network error', msg);
     } finally {
       setSaving(false);
     }
@@ -87,32 +156,43 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
         body: JSON.stringify(form),
       });
       const data = await res.json();
-      setSmtpTestResult({
-        ok: Boolean(data.ok),
-        text: data.ok ? data.message : data.error || 'SMTP test failed.',
-      });
+      const ok = Boolean(data.ok);
+      const text = ok ? data.message : data.error || 'SMTP test failed.';
+      setSmtpTestResult({ ok, text });
+      if (ok) {
+        toast.success('SMTP connection verified', text);
+      } else {
+        toast.error('SMTP test failed', text);
+      }
     } catch {
-      setSmtpTestResult({ ok: false, text: 'Unable to reach server to test SMTP.' });
+      const text = 'Unable to reach server to test SMTP.';
+      setSmtpTestResult({ ok: false, text });
+      toast.error('SMTP test failed', text);
     } finally {
       setTestingSmtp(false);
     }
   };
 
-  const handleTogglePairing = async (paired: boolean) => {
+  const handleUnlinkDevice = async () => {
+    setUnlinking(true);
     try {
-      const res = await fetch('/api/whatsapp/pair', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paired }),
-      });
+      const res = await fetch('/api/whatsapp/unlink', { method: 'POST' });
       const data = await res.json();
-      if (data.ok && data.settings) {
-        onSettingsUpdated(data.settings);
-        setForm((prev) => ({ ...prev, whatsappPaired: paired }));
-        setQrData((prev) => (prev ? { ...prev, paired } : prev));
+      if (res.ok && data.ok) {
+        if (data.qrData) setQrData(data.qrData);
+        if (data.settings) onSettingsUpdated(data.settings);
+        setForm((prev) => ({ ...prev, whatsappPaired: false }));
+        toast.warning(
+          'WhatsApp paired device removed',
+          'Scan a new QR code from WhatsApp Linked Devices to reconnect.'
+        );
+      } else {
+        toast.error('Failed to remove device', data.error || 'Unable to unlink WhatsApp session.');
       }
     } catch {
-      // ignore
+      toast.error('Network error', 'Unable to reach server to remove paired WhatsApp device.');
+    } finally {
+      setUnlinking(false);
     }
   };
 
@@ -327,125 +407,136 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
             </div>
           </section>
 
-          {/* WhatsApp QR Pairing */}
+          {/* WhatsApp QR Setup OR Remove WhatsApp Paired Device (SQLite backed) */}
           <section className="lg:col-span-5 bg-white border border-slate-200 rounded-lg p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-              <div className="flex items-center gap-2">
-                <QrCode className="w-4 h-4 text-[#006837]" aria-hidden="true" />
-                <h2 className="font-display text-base font-semibold text-[#006837]">
-                  WhatsApp QR Setup
-                </h2>
-              </div>
-              <span
-                className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
-                  form.whatsappPaired ? 'text-[#006837]' : 'text-amber-700'
-                }`}
-              >
-                {!form.whatsappPaired && (
-                  <motion.span
-                    aria-hidden="true"
-                    animate={{ scale: [1, 1.35, 1], opacity: [0.6, 1, 0.6] }}
-                    transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
-                    className="w-2 h-2 rounded-full bg-amber-500 inline-block"
-                  />
-                )}
-                <span>{form.whatsappPaired ? 'Paired' : 'Awaiting Scan'}</span>
-              </span>
-            </div>
-
-            <div className="flex flex-col sm:flex-row items-center gap-4">
-              <div className="relative shrink-0">
-                {!form.whatsappPaired && !loadingQr && qrDataUri && (
-                  <motion.div
-                    aria-hidden="true"
-                    animate={{
-                      scale: [0.98, 1.045, 0.98],
-                      opacity: [0.25, 0.65, 0.25],
-                    }}
-                    transition={{
-                      duration: 2.4,
-                      repeat: Infinity,
-                      ease: 'easeInOut',
-                    }}
-                    className="absolute -inset-1 rounded-lg border-2 border-[#2B7A3B]/45 bg-[#2B7A3B]/5 pointer-events-none"
-                  />
-                )}
-
-                <motion.div
-                  animate={
-                    !form.whatsappPaired && !loadingQr && qrDataUri
-                      ? {
-                          scale: [1, 1.015, 1],
-                          opacity: [0.92, 1, 0.92],
-                        }
-                      : { scale: 1, opacity: 1 }
-                  }
-                  transition={
-                    !form.whatsappPaired && !loadingQr && qrDataUri
-                      ? {
-                          duration: 2.4,
-                          repeat: Infinity,
-                          ease: 'easeInOut',
-                        }
-                      : { duration: 0.2 }
-                  }
-                  className={`relative border rounded-md p-2.5 bg-white ${
-                    form.whatsappPaired
-                      ? 'border-emerald-300'
-                      : 'border-[#2B7A3B]/35 shadow-sm'
-                  }`}
-                >
-                  {loadingQr || !qrDataUri ? (
-                    <div className="w-[170px] h-[170px] bg-slate-100 rounded flex items-center justify-center text-xs text-slate-500">
-                      Generating QR...
-                    </div>
-                  ) : (
-                    <img
-                      src={qrDataUri}
-                      alt="WhatsApp Link Device QR Code"
-                      className="w-[170px] h-[170px] block"
-                    />
-                  )}
-                </motion.div>
-              </div>
-
-              <div className="space-y-3 text-xs text-slate-600 flex-1">
-                <p className="leading-relaxed">
-                  On the official NSSF desk phone, open <strong>WhatsApp</strong>, go to{' '}
-                  <strong>Linked Devices</strong>, tap <strong>Link a Device</strong>, and scan this QR code.
-                </p>
-
-                {qrData && (
-                  <div className="font-mono text-[11px] text-slate-500">
-                    Session: {qrData.sessionCode}
+            {!isPaired ? (
+              <>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <QrCode className="w-4 h-4 text-[#006837]" aria-hidden="true" />
+                    <h2 className="font-display text-base font-semibold text-[#006837]">
+                      WhatsApp QR Setup
+                    </h2>
                   </div>
-                )}
-
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={loadQr}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-slate-300 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-                  >
-                    <RefreshCw className="w-3 h-3" aria-hidden="true" />
-                    <span>Refresh QR</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleTogglePairing(!form.whatsappPaired)}
-                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-semibold cursor-pointer ${
-                      form.whatsappPaired
-                        ? 'border border-red-300 text-red-700 hover:bg-red-50'
-                        : 'bg-[#006837] text-white hover:bg-[#00542c]'
-                    }`}
-                  >
-                    <Smartphone className="w-3 h-3" aria-hidden="true" />
-                    <span>{form.whatsappPaired ? 'Unlink Device' : 'Mark Device Paired'}</span>
-                  </button>
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700">
+                    <motion.span
+                      aria-hidden="true"
+                      animate={{ scale: [1, 1.35, 1], opacity: [0.55, 1, 0.55] }}
+                      transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+                      className="w-2 h-2 rounded-full bg-amber-500 inline-block"
+                    />
+                    <span>Awaiting Scan</span>
+                  </span>
                 </div>
-              </div>
-            </div>
+
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  {/* Static QR Code box — untouched by any animations so scanners read cleanly */}
+                  <div className="border border-slate-200 rounded-md p-2.5 bg-white shrink-0">
+                    {loadingQr || !qrDataUri ? (
+                      <div className="w-[170px] h-[170px] bg-slate-100 rounded flex items-center justify-center text-xs text-slate-500">
+                        Generating QR...
+                      </div>
+                    ) : (
+                      <img
+                        src={qrDataUri}
+                        alt="WhatsApp Link Device QR Code"
+                        className="w-[170px] h-[170px] block"
+                      />
+                    )}
+                  </div>
+
+                  <div className="space-y-3 text-xs text-slate-600 flex-1">
+                    <p className="leading-relaxed">
+                      On the official NSSF desk phone, open <strong>WhatsApp</strong>, go to{' '}
+                      <strong>Linked Devices</strong>, tap <strong>Link a Device</strong>, and scan this QR code. Pairing completes automatically once scanned.
+                    </p>
+
+                    {qrData && (
+                      <div className="space-y-1 font-mono text-[11px] text-slate-500">
+                        <div>Session: {qrData.sessionCode}</div>
+                        <div className="font-sans text-[11px] text-slate-500">
+                          {qrData.bridgeReachable
+                            ? 'Gateway reachable · Listening for scan'
+                            : 'QR session persisted in SQLite · Listening via Gateway'}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => loadQr(true)}
+                        disabled={loadingQr}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-300 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                        <span>Refresh QR</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Smartphone className="w-4 h-4 text-[#006837]" aria-hidden="true" />
+                    <h2 className="font-display text-base font-semibold text-[#006837]">
+                      Remove WhatsApp Paired Device
+                    </h2>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#006837]">
+                    <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Connected</span>
+                  </span>
+                </div>
+
+                <div className="border border-emerald-200 bg-emerald-50/50 rounded-md p-4 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-md bg-[#2B7A3B] text-white flex items-center justify-center shrink-0">
+                      <Smartphone className="w-4 h-4" aria-hidden="true" />
+                    </div>
+                    <div className="text-xs space-y-1 min-w-0">
+                      <div className="font-bold text-[#0F2437] text-sm truncate">
+                        {qrData?.deviceName || form.whatsappDeviceName}
+                      </div>
+                      <div className="text-slate-600">
+                        Active WhatsApp session linked and stored in SQLite.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-emerald-200/70 text-xs">
+                    <div>
+                      <div className="text-slate-500">Session ID</div>
+                      <div className="font-mono font-semibold text-[#0F2437] mt-0.5">
+                        {qrData?.sessionCode || 'Paired'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">
+                        {qrData?.pairedPhone ? 'Linked Phone' : 'Paired Timestamp'}
+                      </div>
+                      <div className="font-mono font-semibold text-[#0F2437] mt-0.5">
+                        {qrData?.pairedPhone || qrData?.pairedAt || 'Active'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleUnlinkDevice}
+                  disabled={unlinking}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-red-300 bg-white text-xs font-bold uppercase tracking-wider text-red-700 hover:bg-red-50 disabled:opacity-50 cursor-pointer transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    {unlinking ? 'Removing Paired Device...' : 'Remove WhatsApp Paired Device'}
+                  </span>
+                </button>
+              </>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
               <div>

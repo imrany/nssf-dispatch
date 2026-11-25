@@ -27,6 +27,19 @@ type AppSettings struct {
 	PortalURL          string `json:"portalUrl"`
 }
 
+type WhatsAppSessionRecord struct {
+	SessionCode     string `json:"sessionCode"`
+	QRPayload       string `json:"qrPayload"`
+	QRSvg           string `json:"qrSvg"`
+	Paired          bool   `json:"paired"`
+	DeviceName      string `json:"deviceName"`
+	BridgeURL       string `json:"bridgeUrl"`
+	BridgeReachable bool   `json:"bridgeReachable"`
+	PairedPhone     string `json:"pairedPhone"`
+	PairedAt        string `json:"pairedAt"`
+	UpdatedAt       string `json:"updatedAt"`
+}
+
 type AuditLog struct {
 	ID          int    `json:"id"`
 	Timestamp   string `json:"timestamp"`
@@ -59,6 +72,19 @@ func InitDB() error {
 	CREATE TABLE IF NOT EXISTS settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		session_code TEXT NOT NULL,
+		qr_payload TEXT NOT NULL,
+		qr_svg TEXT NOT NULL,
+		paired INTEGER NOT NULL DEFAULT 0,
+		device_name TEXT NOT NULL DEFAULT 'NSSF Service Desk Terminal 01',
+		bridge_url TEXT NOT NULL DEFAULT 'http://127.0.0.1:8095',
+		bridge_reachable INTEGER NOT NULL DEFAULT 0,
+		paired_phone TEXT NOT NULL DEFAULT '',
+		paired_at TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 	);
 	CREATE TABLE IF NOT EXISTS audit_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,6 +198,80 @@ func SaveSettings(input AppSettings) error {
 	}
 	_, err := runSQL(sb.String())
 	return err
+}
+
+func GetWhatsAppSession() (*WhatsAppSessionRecord, error) {
+	raw, err := runSQL(`SELECT session_code AS sessionCode, qr_payload AS qrPayload, qr_svg AS qrSvg,
+		paired, device_name AS deviceName, bridge_url AS bridgeUrl,
+		bridge_reachable AS bridgeReachable, paired_phone AS pairedPhone,
+		paired_at AS pairedAt, updated_at AS updatedAt
+		FROM whatsapp_sessions WHERE id = 1;`)
+	if err != nil || raw == "" {
+		return nil, err
+	}
+	var rows []struct {
+		SessionCode     string `json:"sessionCode"`
+		QRPayload       string `json:"qrPayload"`
+		QRSvg           string `json:"qrSvg"`
+		Paired          int    `json:"paired"`
+		DeviceName      string `json:"deviceName"`
+		BridgeURL       string `json:"bridgeUrl"`
+		BridgeReachable int    `json:"bridgeReachable"`
+		PairedPhone     string `json:"pairedPhone"`
+		PairedAt        string `json:"pairedAt"`
+		UpdatedAt       string `json:"updatedAt"`
+	}
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	r := rows[0]
+	return &WhatsAppSessionRecord{
+		SessionCode:     r.SessionCode,
+		QRPayload:       r.QRPayload,
+		QRSvg:           r.QRSvg,
+		Paired:          r.Paired == 1,
+		DeviceName:      r.DeviceName,
+		BridgeURL:       r.BridgeURL,
+		BridgeReachable: r.BridgeReachable == 1,
+		PairedPhone:     r.PairedPhone,
+		PairedAt:        r.PairedAt,
+		UpdatedAt:       r.UpdatedAt,
+	}, nil
+}
+
+func SaveWhatsAppSession(s WhatsAppSessionRecord) (*WhatsAppSessionRecord, error) {
+	pairedInt := 0
+	if s.Paired {
+		pairedInt = 1
+	}
+	reachInt := 0
+	if s.BridgeReachable {
+		reachInt = 1
+	}
+	q := fmt.Sprintf(`INSERT INTO whatsapp_sessions (
+		id, session_code, qr_payload, qr_svg, paired, device_name,
+		bridge_url, bridge_reachable, paired_phone, paired_at, updated_at
+	) VALUES (1, %s, %s, %s, %d, %s, %s, %d, %s, %s, datetime('now', 'localtime'))
+	ON CONFLICT(id) DO UPDATE SET
+		session_code = excluded.session_code,
+		qr_payload = excluded.qr_payload,
+		qr_svg = excluded.qr_svg,
+		paired = excluded.paired,
+		device_name = excluded.device_name,
+		bridge_url = excluded.bridge_url,
+		bridge_reachable = excluded.bridge_reachable,
+		paired_phone = excluded.paired_phone,
+		paired_at = excluded.paired_at,
+		updated_at = datetime('now', 'localtime');
+	INSERT OR REPLACE INTO settings (key, value) VALUES ('whatsappPaired', %s);`,
+		sqlLit(s.SessionCode), sqlLit(s.QRPayload), sqlLit(s.QRSvg), pairedInt,
+		sqlLit(s.DeviceName), sqlLit(s.BridgeURL), reachInt,
+		sqlLit(s.PairedPhone), sqlLit(s.PairedAt), sqlLit(fmt.Sprintf("%v", s.Paired)),
+	)
+	if _, err := runSQL(q); err != nil {
+		return nil, err
+	}
+	return GetWhatsAppSession()
 }
 
 func InsertAuditLog(memberNo, memberName, channel, dest, filename, status, details string) error {

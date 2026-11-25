@@ -13,7 +13,12 @@ import {
 } from './server/db.ts';
 import { buildOfficialNssfMessage, sendEmailStatement, testSmtpConnection } from './server/mailer.ts';
 import { encryptPdfWithPassword, extractAndValidatePdf } from './server/pdfEngine.ts';
-import { fetchWhatsAppQr, sendWhatsAppStatement } from './server/whatsapp.ts';
+import {
+  confirmWhatsAppPairingInDb,
+  fetchWhatsAppQr,
+  sendWhatsAppStatement,
+  unlinkWhatsAppSession,
+} from './server/whatsapp.ts';
 
 interface MultipartResult {
   fields: Record<string, string>;
@@ -423,17 +428,36 @@ async function startServer() {
     }
   });
 
-  // 5. WhatsApp QR Pairing Endpoints
-  app.get('/api/whatsapp/qr', async (_req, res) => {
+  // 5. WhatsApp QR & Pairing Endpoints (SQLite backed)
+  app.get('/api/whatsapp/qr', async (req, res) => {
     const cfg = getRawSettings();
-    const qrData = await fetchWhatsAppQr(cfg);
-    res.json(qrData);
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    const qrData = await fetchWhatsAppQr(cfg, forceRefresh);
+    res.json({ ...qrData, settings: getPublicSettings() });
   });
 
-  app.post('/api/whatsapp/pair', (req, res) => {
-    const paired = Boolean(req.body?.paired);
-    saveSettings({ whatsappPaired: paired });
-    res.json({ ok: true, paired, settings: getPublicSettings() });
+  app.get('/api/whatsapp/status', async (_req, res) => {
+    const cfg = getRawSettings();
+    const qrData = await fetchWhatsAppQr(cfg, false);
+    res.json({ ...qrData, settings: getPublicSettings() });
+  });
+
+  app.post('/api/whatsapp/pair-confirm', (req, res) => {
+    const cfg = getRawSettings();
+    const sessionCode = String(req.body?.sessionCode || '').trim();
+    const pairedPhone = String(req.body?.phone || req.body?.pairedPhone || '').trim();
+    const updated = confirmWhatsAppPairingInDb(cfg, sessionCode, pairedPhone);
+    if (!updated) {
+      res.status(404).json({ ok: false, error: 'Active QR session not found or expired.' });
+      return;
+    }
+    res.json({ ok: true, qrData: updated, settings: getPublicSettings() });
+  });
+
+  app.post('/api/whatsapp/unlink', async (_req, res) => {
+    const cfg = getRawSettings();
+    const qrData = await unlinkWhatsAppSession(cfg);
+    res.json({ ok: true, qrData, settings: getPublicSettings() });
   });
 
   // 6. Audit Logs Endpoint
