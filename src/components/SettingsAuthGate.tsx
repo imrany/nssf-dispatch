@@ -23,7 +23,7 @@ export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [statusError, setStatusError] = useState('');
 
-  const [username, setUsername] = useState('admin');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -189,42 +189,31 @@ export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: SMOOTH_EASE }}
-        className="bg-white border border-slate-200 rounded-xl shadow-[0_10px_34px_rgba(15,36,55,0.08)] overflow-hidden"
+        className="overflow-hidden"
       >
-        <div className="bg-[#0F2437] px-6 py-5 border-b-4 border-[#6BC300] flex items-center justify-between gap-4">
+        <div className="py-5 border-b-4 border-[#2B7A3B] flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-white/10 text-[#6BC300] flex items-center justify-center shrink-0">
-              {isSetupMode ? (
-                <UserPlus className="w-5 h-5" aria-hidden="true" />
-              ) : (
-                <ShieldCheck className="w-5 h-5" aria-hidden="true" />
-              )}
-            </div>
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-300">
-                NSSF System Settings
+           <div>
+              <div className="text-[11px] font-bold uppercase tracking-[0.16em]">
+                Settings
               </div>
-              <h1 className="font-display text-xl font-extrabold text-white tracking-tight">
-                {isSetupMode ? 'Setup Admin Account' : 'Administrator Login'}
+              <h1 className="font-display text-xl font-extrabold tracking-tight">
+                {isSetupMode ? 'Setup Admin Account' : 'Administrator Sign in'}
               </h1>
             </div>
           </div>
-
-          <span className="px-2.5 py-1 rounded text-[11px] font-semibold bg-white/10 text-emerald-100 border border-white/15 whitespace-nowrap">
-            {isSetupMode ? 'Initial Setup' : 'Protected'}
-          </span>
         </div>
 
         <form
           onSubmit={isSetupMode ? handleSetupSubmit : handleLoginSubmit}
-          className="p-6 space-y-5"
+          className="py-6 space-y-5"
         >
           <p className="text-xs text-slate-600 leading-relaxed">
             {isSetupMode
-              ? 'No administrator account exists in SQLite yet. Create the initial administrator credentials to secure SMTP settings, WhatsApp pairing, and message templates.'
+              ? 'Create the initial administrator credentials to secure SMTP settings, WhatsApp pairing, and message templates.'
               : status.envPasscodeConfigured
-                ? 'Enter the administrator passcode configured for this server to unlock System Settings.'
-                : 'Sign in with your administrator credentials stored in SQLite to view or modify System Settings.'}
+                ? 'Enter the administrator passcode configured for this server to unlock Settings.'
+                : 'Sign in to view or modify Settings.'}
           </p>
 
           {formError && (
@@ -335,11 +324,11 @@ export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
             <span>
               {submitting
                 ? isSetupMode
-                  ? 'CREATING ADMIN ACCOUNT...'
+                  ? 'CREATING...'
                   : 'VERIFYING...'
                 : isSetupMode
-                  ? 'CREATE ADMIN & UNLOCK SETTINGS'
-                  : 'SIGN IN TO SETTINGS'}
+                  ? 'CREATE ADMIN'
+                  : 'SIGN IN'}
             </span>
           </button>
         </form>

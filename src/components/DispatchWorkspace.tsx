@@ -349,7 +349,7 @@ export function DispatchWorkspace({
 
   const stepHeading =
     step === 'select'
-      ? 'SELF SERVICE'
+      ? 'SERVICE DESK'
       : step === 'validate'
         ? 'VALIDATION'
         : 'DISPATCH STATEMENT';
@@ -383,7 +383,7 @@ export function DispatchWorkspace({
           <span>
             {settings.deliveryMode === 'live'
               ? 'Live SMTP & WhatsApp Gateway'
-              : 'Service Desk Preview Mode'}
+              : 'Preview Mode'}
           </span>
           <span aria-hidden="true">·</span>
           <button
@@ -391,7 +391,7 @@ export function DispatchWorkspace({
             onClick={onOpenSettings}
             className="font-semibold text-[#2B7A3B] hover:underline cursor-pointer"
           >
-            System Settings
+            Settings
           </button>
         </div>
       </div>
@@ -468,8 +468,8 @@ export function DispatchWorkspace({
                     }`}
                   >
                     {settings.emailEnabled
-                      ? 'Validate PDF, protect with ID Card No & send via NSSF SMTP'
-                      : 'Email channel disabled in System Settings'}
+                      ? 'Validate, encrypt & send via NSSF SMTP'
+                      : 'Email channel disabled'}
                   </span>
                   {settings.emailEnabled && (
                     <kbd
@@ -524,8 +524,8 @@ export function DispatchWorkspace({
                     }`}
                   >
                     {settings.whatsappEnabled
-                      ? 'Validate PDF, protect with ID Card No & send via WhatsApp'
-                      : 'WhatsApp channel disabled in System Settings'}
+                      ? 'Validate, encrypt & send via WhatsApp'
+                      : 'WhatsApp channel disabled'}
                   </span>
                   {settings.whatsappEnabled && (
                     <kbd

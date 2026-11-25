@@ -24,12 +24,12 @@ import type { ActiveTab, AppSettings, WhatsAppQrData } from '../types';
 import { toast } from './Toaster';
 
 const DEFAULT_EMAIL_SUBJECT_TEMPLATE =
-  'Official NSSF Provisional Member Statement — {memberName} ({memberNo})';
+  'Official NSSF Member Statement — {memberName} ({memberNo})';
 
 const DEFAULT_WHATSAPP_MESSAGE_TEMPLATE = `*NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA*
 Hello {memberName},
 
-Please find attached your official NSSF Provisional Member Statement ({renamedFile}) for {period}.
+Please find attached your official NSSF Member Statement ({renamedFile}) for {period}.
 
 *Member No:* {memberNo}
 *Total Fund Balance:* KES {totalAmount}
@@ -508,11 +508,9 @@ export function SettingsView({
           </div>
           <div className="flex flex-wrap items-center gap-3 mt-1">
             <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0F2437] tracking-tight">
-              SYSTEM SETTINGS
+              SETTINGS
             </h1>
-            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1E6B34] bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded">
-              Admin: {adminUsername}
-            </span>
+	    
             {isDirty && (
               <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded">
                 Unsaved changes
@@ -520,20 +518,11 @@ export function SettingsView({
             )}
           </div>
           <p className="text-sm text-slate-600 mt-1">
-            Configure Email (SMTP), pair the NSSF WhatsApp desk device via QR code, and manage SQLite defaults.
+            Configure Email (SMTP), pair the NSSF WhatsApp desk device via QR code, and manage defaults.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={onOpenAuditLogs}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#2B7A3B] bg-white text-xs font-bold tracking-wider uppercase text-[#1E6B34] hover:bg-emerald-50 cursor-pointer whitespace-nowrap transition-colors"
-          >
-            <ClipboardList className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Audit Logs</span>
-          </button>
-
           <button
             type="button"
             onClick={handleRefreshButtonClick}
@@ -811,7 +800,7 @@ export function SettingsView({
                         <div className="font-sans text-[11px] text-slate-500">
                           {qrData.bridgeReachable
                             ? 'Gateway reachable · Listening for scan'
-                            : 'QR session persisted in SQLite · Listening via Gateway'}
+                            : 'QR session persisted · Listening via Gateway'}
                         </div>
                       </div>
                     )}

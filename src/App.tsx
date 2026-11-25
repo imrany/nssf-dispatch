@@ -3,7 +3,7 @@ import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { AuditLogsView } from './components/AuditLogsView';
 import { DispatchSuccess } from './components/DispatchSuccess';
 import { DispatchWorkspace } from './components/DispatchWorkspace';
-import { Header } from './components/Header';
+// import { Header } from './components/Header';
 import { SettingsAuthGate } from './components/SettingsAuthGate';
 import { SettingsView, type PendingSettingsAction } from './components/SettingsView';
 import { Toaster, toast } from './components/Toaster';
@@ -113,11 +113,11 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <div className="min-h-screen flex flex-col bg-white text-[#0F2437]">
-        <Header
+      {/*<Header
           activeTab={activeTab}
           onTabChange={handleTabChange}
           portalUrl={settings.portalUrl}
-        />
+        />*/}
 
         <main className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-8 py-8">
           <AnimatePresence mode="wait">
