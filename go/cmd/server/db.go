@@ -33,8 +33,6 @@ type AppSettings struct {
 	PreviewBeforeDispatch   bool   `json:"previewBeforeDispatch"`
 	EmailSubjectTemplate    string `json:"emailSubjectTemplate"`
 	WhatsAppMessageTemplate string `json:"whatsappMessageTemplate"`
-	GoServiceEnabled        bool   `json:"goServiceEnabled"`
-	GoServiceURL            string `json:"goServiceUrl"`
 }
 
 const (
@@ -111,10 +109,6 @@ func hasSQLiteCLI() bool {
 }
 
 func defaultSettingsMap() map[string]string {
-	goURL := strings.TrimSpace(os.Getenv("GO_SERVICE_URL"))
-	if goURL == "" {
-		goURL = "http://127.0.0.1:8080"
-	}
 	return map[string]string{
 		"smtpHost":                "smtp.nssfkenya.co.ke",
 		"smtpPort":                "587",
@@ -134,8 +128,6 @@ func defaultSettingsMap() map[string]string {
 		"previewBeforeDispatch":   "true",
 		"emailSubjectTemplate":    DefaultEmailSubjectTemplate,
 		"whatsappMessageTemplate": DefaultWhatsAppMessageTemplate,
-		"goServiceEnabled":        "false",
-		"goServiceUrl":            goURL,
 	}
 }
 
@@ -276,10 +268,6 @@ func settingsFromMap(m map[string]string, pairedOverride *bool) AppSettings {
 	if pairedOverride != nil {
 		isPaired = *pairedOverride
 	}
-	goURL := strings.TrimSpace(os.Getenv("GO_SERVICE_URL"))
-	if goURL == "" {
-		goURL = "http://127.0.0.1:8080"
-	}
 	return AppSettings{
 		SMTPHost:                defaultStr(m["smtpHost"], "smtp.nssfkenya.co.ke"),
 		SMTPPort:                defaultStr(m["smtpPort"], "587"),
@@ -300,8 +288,6 @@ func settingsFromMap(m map[string]string, pairedOverride *bool) AppSettings {
 		PreviewBeforeDispatch:   m["previewBeforeDispatch"] != "false",
 		EmailSubjectTemplate:    defaultStr(m["emailSubjectTemplate"], DefaultEmailSubjectTemplate),
 		WhatsAppMessageTemplate: defaultStr(m["whatsappMessageTemplate"], DefaultWhatsAppMessageTemplate),
-		GoServiceEnabled:        m["goServiceEnabled"] == "true",
-		GoServiceURL:            defaultStr(m["goServiceUrl"], goURL),
 	}
 }
 
@@ -366,8 +352,6 @@ func GetSafeWorkspaceSettings() AppSettings {
 		PreviewBeforeDispatch:   raw.PreviewBeforeDispatch,
 		EmailSubjectTemplate:    "",
 		WhatsAppMessageTemplate: "",
-		GoServiceEnabled:        raw.GoServiceEnabled,
-		GoServiceURL:            "",
 	}
 }
 
@@ -378,11 +362,6 @@ func SaveSettings(input AppSettings) error {
 		nextPass = ""
 	} else if input.SMTPPass != "" {
 		nextPass = input.SMTPPass
-	}
-
-	nextGoURL := defaultStr(strings.TrimSpace(input.GoServiceURL), current.GoServiceURL)
-	if nextGoURL == "" {
-		nextGoURL = "http://127.0.0.1:8080"
 	}
 
 	pairs := map[string]string{
@@ -404,8 +383,6 @@ func SaveSettings(input AppSettings) error {
 		"previewBeforeDispatch":   fmt.Sprintf("%v", input.PreviewBeforeDispatch),
 		"emailSubjectTemplate":    defaultStr(strings.TrimSpace(input.EmailSubjectTemplate), DefaultEmailSubjectTemplate),
 		"whatsappMessageTemplate": defaultStr(strings.TrimSpace(input.WhatsAppMessageTemplate), DefaultWhatsAppMessageTemplate),
-		"goServiceEnabled":        fmt.Sprintf("%v", input.GoServiceEnabled),
-		"goServiceUrl":            nextGoURL,
 	}
 
 	if !hasSQLiteCLI() {

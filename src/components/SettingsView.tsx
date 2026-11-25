@@ -130,8 +130,6 @@ export function SettingsView({
   const [unlinking, setUnlinking] = useState(false);
 
   const [runtimeInfo, setRuntimeInfo] = useState<SystemRuntimeInfo | null>(null);
-  const [testingGo, setTestingGo] = useState(false);
-  const [goTestResult, setGoTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [templatesExpanded, setTemplatesExpanded] = useState(false);
   const [activeTemplateField, setActiveTemplateField] = useState<'subject' | 'whatsapp'>('whatsapp');
@@ -160,9 +158,7 @@ export function SettingsView({
       form.portalUrl !== settings.portalUrl ||
       form.previewBeforeDispatch !== settings.previewBeforeDispatch ||
       form.emailSubjectTemplate !== settings.emailSubjectTemplate ||
-      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate ||
-      Boolean(form.goServiceEnabled) !== Boolean(settings.goServiceEnabled) ||
-      (form.goServiceUrl ?? 'http://127.0.0.1:8080') !== (settings.goServiceUrl ?? 'http://127.0.0.1:8080')
+      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate
     );
   }, [form, settings]);
 
@@ -402,41 +398,6 @@ export function SettingsView({
     }
   };
 
-  const handleTestGoService = async () => {
-    setTestingGo(true);
-    setGoTestResult(null);
-    try {
-      const res = await fetch('/api/system/test-go', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ goServiceUrl: form.goServiceUrl || 'http://127.0.0.1:8080' }),
-      });
-      if (res.status === 401) {
-        onAuthExpired();
-        return;
-      }
-      const data = await res.json();
-      const ok = Boolean(data.ok);
-      const text = ok ? data.message : data.error || 'Go service connection test failed.';
-      setGoTestResult({ ok, text });
-      if (ok) {
-        toast.success('Go service reachable', text);
-        await loadRuntime();
-      } else {
-        toast.error('Go service test failed', text);
-      }
-    } catch {
-      const text = 'Unable to reach server to test Go service.';
-      setGoTestResult({ ok: false, text });
-      toast.error('Go service test failed', text);
-    } finally {
-      setTestingGo(false);
-    }
-  };
-
   const clearPendingModal = () => {
     setLocalPendingAction(null);
     onClearPendingNavigation();
@@ -599,7 +560,7 @@ export function SettingsView({
             )}
           </div>
             <p className="text-sm text-slate-600 mt-1">
-              Signed in as <strong className="text-[#0F2437]">{adminUsername}</strong> · Configure Email (SMTP), pair WhatsApp, manage Go service integration, and templates.
+              Signed in as <strong className="text-[#0F2437]">{adminUsername}</strong> · Configure Email (SMTP), pair WhatsApp, manage document defaults, and templates.
             </p>
           </div>
 
@@ -1054,95 +1015,19 @@ export function SettingsView({
             </div>
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-md p-4 space-y-4">
+          <div className="bg-slate-50 border border-slate-200 rounded-md p-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="text-xs text-slate-600">
-                <strong className="text-slate-800">Go Backend Service Integration:</strong>{' '}
-                Run the standalone Go server in <code className="text-[#006837]">go/cmd/server</code> for native PDF validation, encryption, and dispatch, or proxy requests to it from the Node.js workspace.
+                <strong className="text-slate-800">Go Backend Runtime:</strong>{' '}
+                Served natively by <code className="text-[#006837]">go/cmd/server</code> for PDF validation, encryption, SMTP/WhatsApp dispatch, and embedded frontend delivery.
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span
-                  className={`px-2.5 py-1 rounded text-[11px] font-bold uppercase tracking-wider border ${
-                    runtimeInfo?.activeEngine === 'go'
-                      ? 'bg-emerald-50 text-[#1E6B34] border-emerald-200'
-                      : runtimeInfo?.activeEngine === 'go-proxy'
-                        ? runtimeInfo.goServiceReachable
-                          ? 'bg-emerald-50 text-[#1E6B34] border-emerald-200'
-                          : 'bg-amber-50 text-amber-800 border-amber-200'
-                        : 'bg-white text-slate-700 border-slate-300'
-                  }`}
-                >
-                  Engine:{' '}
-                  {runtimeInfo?.activeEngine === 'go'
-                    ? 'Go Standalone'
-                    : runtimeInfo?.activeEngine === 'go-proxy'
-                      ? runtimeInfo.goServiceReachable
-                        ? 'Go Proxy (Connected)'
-                        : 'Go Proxy (Fallback to Node)'
-                      : 'Node.js'}
+                <span className="px-2.5 py-1 rounded text-[11px] font-bold uppercase tracking-wider border bg-emerald-50 text-[#1E6B34] border-emerald-200">
+                  Engine: Go Standalone
+                  {runtimeInfo?.goEngineInfo?.sqliteCliBackend === false ? ' (JSON Fallback)' : ''}
                 </span>
               </div>
             </div>
-
-            {runtimeInfo?.activeEngine !== 'go' && (
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end pt-2 border-t border-slate-200">
-                <label className="md:col-span-5 flex items-start gap-2.5 p-2.5 rounded border border-slate-200 bg-white cursor-pointer hover:border-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(form.goServiceEnabled)}
-                    onChange={(e) => setForm({ ...form, goServiceEnabled: e.target.checked })}
-                    className="mt-0.5 h-4 w-4 accent-[#006837]"
-                  />
-                  <div className="text-xs">
-                    <div className="font-semibold text-slate-900">Delegate Dispatch to Go Service</div>
-                    <div className="text-slate-500">
-                      Proxy validate, encrypt &amp; send operations to Go backend
-                    </div>
-                  </div>
-                </label>
-
-                <div className="md:col-span-5">
-                  <label htmlFor="go-service-url" className="block text-xs font-medium text-slate-700 mb-1">
-                    Go Service Base URL
-                  </label>
-                  <input
-                    id="go-service-url"
-                    value={form.goServiceUrl ?? 'http://127.0.0.1:8080'}
-                    onChange={(e) => setForm({ ...form, goServiceUrl: e.target.value })}
-                    placeholder="http://127.0.0.1:8080"
-                    className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-xs font-mono focus:outline-none focus:border-[#006837]"
-                  />
-                </div>
-
-                <div className="md:col-span-2">
-                  <button
-                    type="button"
-                    onClick={handleTestGoService}
-                    disabled={testingGo}
-                    className="w-full py-2 px-3 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer whitespace-nowrap"
-                  >
-                    {testingGo ? 'Testing...' : 'Test Go'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {goTestResult && (
-              <div
-                className={`p-2.5 rounded border text-xs flex items-center gap-2 ${
-                  goTestResult.ok
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                    : 'bg-red-50 border-red-200 text-red-800'
-                }`}
-              >
-                {goTestResult.ok ? (
-                  <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
-                )}
-                <span>{goTestResult.text}</span>
-              </div>
-            )}
           </div>
         </section>
 

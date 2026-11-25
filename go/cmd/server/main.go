@@ -95,18 +95,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/system/runtime", func(w http.ResponseWriter, r *http.Request) {
-		cfg, _ := GetRawSettings()
-		authOK, _ := VerifyAdminSessionToken(ExtractBearerToken(r))
-		goURL := ""
-		if authOK {
-			goURL = cfg.GoServiceURL
-		}
 		writeJSON(w, 200, map[string]any{
-			"ok":                 true,
-			"activeEngine":       "go",
-			"goServiceEnabled":   true,
-			"goServiceUrl":       goURL,
-			"goServiceReachable": true,
+			"ok":           true,
+			"activeEngine": "go",
 			"goEngineInfo": map[string]any{
 				"engine":           "go",
 				"sqliteCliBackend": hasSQLiteCLI(),

@@ -486,7 +486,7 @@ func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
 		DeviceName:      cfg.WhatsAppDeviceName,
 		BridgeURL:       cfg.WhatsAppBridgeURL,
 		Error: fmt.Sprintf(
-			"No WhatsApp Web gateway reachable at %s. Run the Node.js server (built-in WhatsApp Web client) or start a WhatsApp gateway sidecar at that URL to generate a live pairing QR code.",
+			"No WhatsApp Web gateway reachable at %s. Start a WhatsApp gateway sidecar at that URL to generate a live pairing QR code.",
 			defaultStr(cfg.WhatsAppBridgeURL, "http://127.0.0.1:8095"),
 		),
 	}

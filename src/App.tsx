@@ -39,8 +39,6 @@ Please find attached your official NSSF Provisional Member Statement ({renamedFi
 Enter {passwordGuide} when prompted for the PDF password.
 
 Self-Service: USSD *303# or {portalUrl}`,
-  goServiceEnabled: false,
-  goServiceUrl: 'http://127.0.0.1:8080',
 };
 
 export default function App() {
