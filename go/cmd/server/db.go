@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -81,10 +83,11 @@ type jsonFallbackState struct {
 }
 
 var (
-	dbMu           sync.Mutex
-	useSQLiteCLI   bool
-	sqliteChecked  bool
-	fallbackState  jsonFallbackState
+	dbMu          sync.Mutex
+	sqlCLIMu      sync.Mutex
+	useSQLiteCLI  bool
+	sqliteChecked bool
+	fallbackState jsonFallbackState
 )
 
 func getDBPath() string {
@@ -169,12 +172,42 @@ func saveFallbackLocked() error {
 }
 
 func runSQL(query string) (string, error) {
-	cmd := exec.Command("sqlite3", "-json", getDBPath(), query)
+	sqlCLIMu.Lock()
+	defer sqlCLIMu.Unlock()
+
+	cmd := exec.Command("sqlite3", "-batch", "-noheader", "-separator", "|", "-cmd", ".timeout 5000", getDBPath())
+	cmd.Stdin = strings.NewReader(query)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("sqlite3 error: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), nil
+}
+
+func decodeHexField(s string) string {
+	b, err := hex.DecodeString(strings.TrimSpace(s))
+	if err != nil {
+		return s
+	}
+	return string(b)
+}
+
+func splitPipeRows(raw string, expectedCols int) [][]string {
+	if raw == "" {
+		return nil
+	}
+	lines := strings.Split(raw, "\n")
+	rows := make([][]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		cols := strings.Split(line, "|")
+		if len(cols) >= expectedCols {
+			rows = append(rows, cols)
+		}
+	}
+	return rows
 }
 
 func sqlLit(s string) string {
@@ -285,22 +318,15 @@ func GetRawSettings() (AppSettings, error) {
 		return settingsFromMap(fallbackState.Settings, pairedOverride), nil
 	}
 
-	raw, err := runSQL("SELECT key, value FROM settings;")
+	raw, err := runSQL("SELECT hex(COALESCE(key, '')), hex(COALESCE(value, '')) FROM settings;")
 	if err != nil {
 		return AppSettings{}, err
 	}
-	var rows []struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
-	}
-	if raw != "" {
-		if err := json.Unmarshal([]byte(raw), &rows); err != nil {
-			return AppSettings{}, err
-		}
-	}
 	m := map[string]string{}
-	for _, r := range rows {
-		m[r.Key] = r.Value
+	for _, cols := range splitPipeRows(raw, 2) {
+		k := decodeHexField(cols[0])
+		v := decodeHexField(cols[1])
+		m[k] = v
 	}
 	var pairedOverride *bool
 	if sess, _ := GetWhatsAppSession(); sess != nil {
@@ -424,41 +450,31 @@ func GetWhatsAppSession() (*WhatsAppSessionRecord, error) {
 		return &cp, nil
 	}
 
-	raw, err := runSQL(`SELECT session_code AS sessionCode, qr_payload AS qrPayload, qr_svg AS qrSvg,
-		paired, device_name AS deviceName, bridge_url AS bridgeUrl,
-		bridge_reachable AS bridgeReachable, paired_phone AS pairedPhone,
-		paired_at AS pairedAt, updated_at AS updatedAt
+	raw, err := runSQL(`SELECT hex(COALESCE(session_code, '')), hex(COALESCE(qr_payload, '')), hex(COALESCE(qr_svg, '')),
+		paired, hex(COALESCE(device_name, '')), hex(COALESCE(bridge_url, '')),
+		bridge_reachable, hex(COALESCE(paired_phone, '')), hex(COALESCE(paired_at, '')), hex(COALESCE(updated_at, ''))
 		FROM whatsapp_sessions WHERE id = 1;`)
 	if err != nil || raw == "" {
 		return nil, err
 	}
-	var rows []struct {
-		SessionCode     string `json:"sessionCode"`
-		QRPayload       string `json:"qrPayload"`
-		QRSvg           string `json:"qrSvg"`
-		Paired          int    `json:"paired"`
-		DeviceName      string `json:"deviceName"`
-		BridgeURL       string `json:"bridgeUrl"`
-		BridgeReachable int    `json:"bridgeReachable"`
-		PairedPhone     string `json:"pairedPhone"`
-		PairedAt        string `json:"pairedAt"`
-		UpdatedAt       string `json:"updatedAt"`
+	rows := splitPipeRows(raw, 10)
+	if len(rows) == 0 {
+		return nil, nil
 	}
-	if err := json.Unmarshal([]byte(raw), &rows); err != nil || len(rows) == 0 {
-		return nil, err
-	}
-	r := rows[0]
+	cols := rows[0]
+	pairedInt, _ := strconv.Atoi(strings.TrimSpace(cols[3]))
+	reachInt, _ := strconv.Atoi(strings.TrimSpace(cols[6]))
 	return &WhatsAppSessionRecord{
-		SessionCode:     r.SessionCode,
-		QRPayload:       r.QRPayload,
-		QRSvg:           r.QRSvg,
-		Paired:          r.Paired == 1,
-		DeviceName:      r.DeviceName,
-		BridgeURL:       r.BridgeURL,
-		BridgeReachable: r.BridgeReachable == 1,
-		PairedPhone:     r.PairedPhone,
-		PairedAt:        r.PairedAt,
-		UpdatedAt:       r.UpdatedAt,
+		SessionCode:     decodeHexField(cols[0]),
+		QRPayload:       decodeHexField(cols[1]),
+		QRSvg:           decodeHexField(cols[2]),
+		Paired:          pairedInt == 1,
+		DeviceName:      decodeHexField(cols[4]),
+		BridgeURL:       decodeHexField(cols[5]),
+		BridgeReachable: reachInt == 1,
+		PairedPhone:     decodeHexField(cols[7]),
+		PairedAt:        decodeHexField(cols[8]),
+		UpdatedAt:       decodeHexField(cols[9]),
 	}, nil
 }
 
@@ -485,21 +501,10 @@ func SaveWhatsAppSession(s WhatsAppSessionRecord) (*WhatsAppSessionRecord, error
 	if s.BridgeReachable {
 		reachInt = 1
 	}
-	q := fmt.Sprintf(`INSERT INTO whatsapp_sessions (
+	q := fmt.Sprintf(`INSERT OR REPLACE INTO whatsapp_sessions (
 		id, session_code, qr_payload, qr_svg, paired, device_name,
 		bridge_url, bridge_reachable, paired_phone, paired_at, updated_at
-	) VALUES (1, %s, %s, %s, %d, %s, %s, %d, %s, %s, datetime('now', 'localtime'))
-	ON CONFLICT(id) DO UPDATE SET
-		session_code = excluded.session_code,
-		qr_payload = excluded.qr_payload,
-		qr_svg = excluded.qr_svg,
-		paired = excluded.paired,
-		device_name = excluded.device_name,
-		bridge_url = excluded.bridge_url,
-		bridge_reachable = excluded.bridge_reachable,
-		paired_phone = excluded.paired_phone,
-		paired_at = excluded.paired_at,
-		updated_at = datetime('now', 'localtime');
+	) VALUES (1, %s, %s, %s, %d, %s, %s, %d, %s, %s, datetime('now', 'localtime'));
 	INSERT OR REPLACE INTO settings (key, value) VALUES ('whatsappPaired', %s);`,
 		sqlLit(s.SessionCode), sqlLit(s.QRPayload), sqlLit(s.QRSvg), pairedInt,
 		sqlLit(s.DeviceName), sqlLit(s.BridgeURL), reachInt,
@@ -558,15 +563,28 @@ func GetAuditLogs() ([]AuditLog, error) {
 		return out, nil
 	}
 
-	raw, err := runSQL(`SELECT id, timestamp, member_no AS memberNo, member_name AS memberName,
-		channel, destination, renamed_file AS renamedFile, status, details
+	raw, err := runSQL(`SELECT id, hex(COALESCE(timestamp, '')), hex(COALESCE(member_no, '')), hex(COALESCE(member_name, '')),
+		hex(COALESCE(channel, '')), hex(COALESCE(destination, '')), hex(COALESCE(renamed_file, '')),
+		hex(COALESCE(status, '')), hex(COALESCE(details, ''))
 		FROM audit_logs ORDER BY id DESC LIMIT 150;`)
 	if err != nil {
 		return []AuditLog{}, err
 	}
-	logs := []AuditLog{}
-	if raw != "" {
-		_ = json.Unmarshal([]byte(raw), &logs)
+	rows := splitPipeRows(raw, 9)
+	logs := make([]AuditLog, 0, len(rows))
+	for _, cols := range rows {
+		idVal, _ := strconv.Atoi(strings.TrimSpace(cols[0]))
+		logs = append(logs, AuditLog{
+			ID:          idVal,
+			Timestamp:   decodeHexField(cols[1]),
+			MemberNo:    decodeHexField(cols[2]),
+			MemberName:  decodeHexField(cols[3]),
+			Channel:     decodeHexField(cols[4]),
+			Destination: decodeHexField(cols[5]),
+			RenamedFile: decodeHexField(cols[6]),
+			Status:      decodeHexField(cols[7]),
+			Details:     decodeHexField(cols[8]),
+		})
 	}
 	return logs, nil
 }
@@ -583,15 +601,21 @@ func GetAdminAccount() (*AdminAccount, error) {
 		return &cp, nil
 	}
 
-	raw, err := runSQL(`SELECT username, password_hash AS passwordHash, password_salt AS passwordSalt, created_at AS createdAt FROM admin_users WHERE id = 1;`)
+	raw, err := runSQL(`SELECT hex(COALESCE(username, '')), hex(COALESCE(password_hash, '')), hex(COALESCE(password_salt, '')), hex(COALESCE(created_at, '')) FROM admin_users WHERE id = 1;`)
 	if err != nil || raw == "" {
 		return nil, err
 	}
-	var rows []AdminAccount
-	if err := json.Unmarshal([]byte(raw), &rows); err != nil || len(rows) == 0 {
-		return nil, err
+	rows := splitPipeRows(raw, 4)
+	if len(rows) == 0 {
+		return nil, nil
 	}
-	return &rows[0], nil
+	cols := rows[0]
+	return &AdminAccount{
+		Username:     decodeHexField(cols[0]),
+		PasswordHash: decodeHexField(cols[1]),
+		PasswordSalt: decodeHexField(cols[2]),
+		CreatedAt:    decodeHexField(cols[3]),
+	}, nil
 }
 
 func HasAdminAccount() bool {
