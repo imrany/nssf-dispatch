@@ -22,9 +22,10 @@ type AppSettings struct {
 	WhatsAppBridgeURL  string `json:"whatsappBridgeUrl"`
 	WhatsAppPaired     bool   `json:"whatsappPaired"`
 	WhatsAppDeviceName string `json:"whatsappDeviceName"`
-	FilenameTemplate   string `json:"filenameTemplate"`
-	PasswordMode       string `json:"passwordMode"`
-	PortalURL          string `json:"portalUrl"`
+	FilenameTemplate      string `json:"filenameTemplate"`
+	PasswordMode          string `json:"passwordMode"`
+	PortalURL             string `json:"portalUrl"`
+	PreviewBeforeDispatch bool   `json:"previewBeforeDispatch"`
 }
 
 type WhatsAppSessionRecord struct {
@@ -112,7 +113,8 @@ func InitDB() error {
 		('whatsappDeviceName', 'NSSF Service Desk Terminal 01'),
 		('filenameTemplate', 'NSSF_Statement_{memberNo}_{date}.pdf'),
 		('passwordMode', 'id_card'),
-		('portalUrl', 'https://nssfdigital.enssf.co.ke');
+		('portalUrl', 'https://nssfdigital.enssf.co.ke'),
+		('previewBeforeDispatch', 'true');
 	`
 	_, err := runSQL(schema)
 	return err
@@ -150,9 +152,10 @@ func GetRawSettings() (AppSettings, error) {
 		WhatsAppBridgeURL:  defaultStr(m["whatsappBridgeUrl"], "http://127.0.0.1:8095"),
 		WhatsAppPaired:     m["whatsappPaired"] == "true",
 		WhatsAppDeviceName: defaultStr(m["whatsappDeviceName"], "NSSF Service Desk Terminal 01"),
-		FilenameTemplate:   defaultStr(m["filenameTemplate"], "NSSF_Statement_{memberNo}_{date}.pdf"),
-		PasswordMode:       defaultStr(m["passwordMode"], "id_card"),
-		PortalURL:          defaultStr(m["portalUrl"], "https://nssfdigital.enssf.co.ke"),
+		FilenameTemplate:      defaultStr(m["filenameTemplate"], "NSSF_Statement_{memberNo}_{date}.pdf"),
+		PasswordMode:          defaultStr(m["passwordMode"], "id_card"),
+		PortalURL:             defaultStr(m["portalUrl"], "https://nssfdigital.enssf.co.ke"),
+		PreviewBeforeDispatch: m["previewBeforeDispatch"] != "false",
 	}, nil
 }
 
@@ -187,9 +190,10 @@ func SaveSettings(input AppSettings) error {
 		"whatsappBridgeUrl":  strings.TrimSpace(input.WhatsAppBridgeURL),
 		"whatsappPaired":     fmt.Sprintf("%v", input.WhatsAppPaired),
 		"whatsappDeviceName": strings.TrimSpace(input.WhatsAppDeviceName),
-		"filenameTemplate":   defaultStr(strings.TrimSpace(input.FilenameTemplate), "NSSF_Statement_{memberNo}_{date}.pdf"),
-		"passwordMode":       defaultStr(input.PasswordMode, "id_card"),
-		"portalUrl":          defaultStr(strings.TrimSpace(input.PortalURL), "https://nssfdigital.enssf.co.ke"),
+		"filenameTemplate":      defaultStr(strings.TrimSpace(input.FilenameTemplate), "NSSF_Statement_{memberNo}_{date}.pdf"),
+		"passwordMode":          defaultStr(input.PasswordMode, "id_card"),
+		"portalUrl":             defaultStr(strings.TrimSpace(input.PortalURL), "https://nssfdigital.enssf.co.ke"),
+		"previewBeforeDispatch": fmt.Sprintf("%v", input.PreviewBeforeDispatch),
 	}
 
 	var sb strings.Builder

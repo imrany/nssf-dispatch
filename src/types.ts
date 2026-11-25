@@ -66,6 +66,7 @@ export interface AppSettings {
   filenameTemplate: string;
   passwordMode: 'id_card' | 'id_and_nssf_last4';
   portalUrl: string;
+  previewBeforeDispatch: boolean;
 }
 
 export interface WhatsAppQrData {

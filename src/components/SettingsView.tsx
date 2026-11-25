@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { motion } from 'motion/react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Mail,
   QrCode,
@@ -10,20 +11,39 @@ import {
   Server,
   Smartphone,
   Trash2,
+  X,
 } from 'lucide-react';
-import type { AppSettings, WhatsAppQrData } from '../types';
+import type { ActiveTab, AppSettings, WhatsAppQrData } from '../types';
 import { toast } from './Toaster';
+
+export type PendingSettingsAction =
+  | { type: 'tab'; targetTab: ActiveTab }
+  | { type: 'refresh_settings' }
+  | { type: 'browser_reload' };
 
 interface SettingsViewProps {
   settings: AppSettings;
   onSettingsUpdated: (updated: AppSettings) => void;
+  pendingNavigation: PendingSettingsAction | null;
+  onClearPendingNavigation: () => void;
+  onDirtyChange: (dirty: boolean) => void;
+  onProceedToTab: (tab: ActiveTab) => void;
 }
 
-export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps) {
+export function SettingsView({
+  settings,
+  onSettingsUpdated,
+  pendingNavigation,
+  onClearPendingNavigation,
+  onDirtyChange,
+  onProceedToTab,
+}: SettingsViewProps) {
   const [form, setForm] = useState<AppSettings>({ ...settings, smtpPass: '' });
   const [saving, setSaving] = useState(false);
   const [saveNotice, setSaveNotice] = useState('');
   const [saveError, setSaveError] = useState('');
+  const [localPendingAction, setLocalPendingAction] = useState<PendingSettingsAction | null>(null);
+  const [refreshingSettings, setRefreshingSettings] = useState(false);
 
   const [testingSmtp, setTestingSmtp] = useState(false);
   const [smtpTestResult, setSmtpTestResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -35,6 +55,59 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
   useEffect(() => {
     setForm({ ...settings, smtpPass: '' });
   }, [settings]);
+
+  const isDirty = useMemo(() => {
+    return (
+      form.smtpHost !== settings.smtpHost ||
+      String(form.smtpPort) !== String(settings.smtpPort) ||
+      form.smtpSecurity !== settings.smtpSecurity ||
+      form.smtpUser !== settings.smtpUser ||
+      Boolean(form.smtpPass && form.smtpPass.length > 0) ||
+      form.smtpFrom !== settings.smtpFrom ||
+      form.emailEnabled !== settings.emailEnabled ||
+      form.whatsappEnabled !== settings.whatsappEnabled ||
+      form.deliveryMode !== settings.deliveryMode ||
+      form.whatsappBridgeUrl !== settings.whatsappBridgeUrl ||
+      form.whatsappDeviceName !== settings.whatsappDeviceName ||
+      form.filenameTemplate !== settings.filenameTemplate ||
+      form.passwordMode !== settings.passwordMode ||
+      form.portalUrl !== settings.portalUrl ||
+      form.previewBeforeDispatch !== settings.previewBeforeDispatch
+    );
+  }, [form, settings]);
+
+  useEffect(() => {
+    onDirtyChange(isDirty);
+    return () => onDirtyChange(false);
+  }, [isDirty, onDirtyChange]);
+
+  const activePendingAction = pendingNavigation ?? localPendingAction;
+
+  // Guard native browser reload/tab close and Ctrl/Cmd+R or F5 when unsaved edits exist
+  useEffect(() => {
+    if (!isDirty) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isReloadKey =
+        e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r');
+      if (isReloadKey) {
+        e.preventDefault();
+        setLocalPendingAction({ type: 'browser_reload' });
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isDirty]);
 
   const isPaired = qrData ? qrData.paired : form.whatsappPaired;
 
@@ -102,8 +175,7 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
     };
   }, [isPaired, onSettingsUpdated]);
 
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const persistFormSettings = async (): Promise<boolean> => {
     setSaving(true);
     setSaveNotice('');
     setSaveError('');
@@ -119,8 +191,10 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
         const msg = data.error || 'Failed to save settings.';
         setSaveError(msg);
         toast.error('Failed to save configuration', msg);
+        return false;
       } else {
         onSettingsUpdated(data.settings);
+        setForm({ ...data.settings, smtpPass: '' });
         const msg = 'System configuration saved to SQLite database.';
         setSaveNotice(msg);
         toast.success('Settings saved', msg);
@@ -136,14 +210,79 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
           );
         }
         setTimeout(() => setSaveNotice(''), 4000);
+        return true;
       }
     } catch {
       const msg = 'Network error saving settings.';
       setSaveError(msg);
       toast.error('Network error', msg);
+      return false;
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await persistFormSettings();
+  };
+
+  const executeSettingsRefresh = async () => {
+    setRefreshingSettings(true);
+    try {
+      const res = await fetch('/api/settings');
+      const data = (await res.json()) as AppSettings;
+      if (data && typeof data.smtpHost === 'string') {
+        onSettingsUpdated(data);
+        setForm({ ...data, smtpPass: '' });
+      }
+      await loadQr(false);
+      toast.success('Settings refreshed', 'Loaded latest saved configuration from SQLite.');
+    } catch {
+      toast.error('Refresh failed', 'Unable to reload settings from server.');
+    } finally {
+      setRefreshingSettings(false);
+    }
+  };
+
+  const handleRefreshButtonClick = () => {
+    if (isDirty) {
+      setLocalPendingAction({ type: 'refresh_settings' });
+    } else {
+      executeSettingsRefresh();
+    }
+  };
+
+  const clearPendingModal = () => {
+    setLocalPendingAction(null);
+    onClearPendingNavigation();
+  };
+
+  const executePendingAction = async (action: PendingSettingsAction) => {
+    clearPendingModal();
+    if (action.type === 'tab') {
+      onProceedToTab(action.targetTab);
+    } else if (action.type === 'refresh_settings') {
+      await executeSettingsRefresh();
+    } else if (action.type === 'browser_reload') {
+      window.location.reload();
+    }
+  };
+
+  const handleSaveAndProceed = async () => {
+    if (!activePendingAction) return;
+    const saved = await persistFormSettings();
+    if (saved) {
+      await executePendingAction(activePendingAction);
+    }
+  };
+
+  const handleIgnoreAndProceed = async () => {
+    if (!activePendingAction) return;
+    setForm({ ...settings, smtpPass: '' });
+    onDirtyChange(false);
+    toast.warning('Unsaved changes discarded', 'Reverted to last saved SQLite configuration.');
+    await executePendingAction(activePendingAction);
   };
 
   const handleTestSmtp = async () => {
@@ -207,13 +346,30 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
           <div className="text-[11px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
             NSSF DIGITAL STATEMENT DISPATCH
           </div>
-          <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0F2437] tracking-tight mt-1">
-            SYSTEM SETTINGS
-          </h1>
+          <div className="flex flex-wrap items-center gap-3 mt-1">
+            <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0F2437] tracking-tight">
+              SYSTEM SETTINGS
+            </h1>
+            {isDirty && (
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded">
+                Unsaved changes
+              </span>
+            )}
+          </div>
           <p className="text-sm text-slate-600 mt-1">
             Configure Email (SMTP), pair the NSSF WhatsApp desk device via QR code, and manage SQLite defaults.
           </p>
         </div>
+
+        <button
+          type="button"
+          onClick={handleRefreshButtonClick}
+          disabled={refreshingSettings}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshingSettings ? 'animate-spin' : ''}`} aria-hidden="true" />
+          <span>{refreshingSettings ? 'Refreshing...' : 'Refresh Settings'}</span>
+        </button>
       </div>
 
       {saveNotice && (
@@ -234,10 +390,10 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
         {/* Channel Activation & Delivery Mode */}
         <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
           <h2 className="font-display text-base font-semibold text-[#006837] border-b border-slate-100 pb-2.5">
-            Channel Availability &amp; Delivery Mode
+            Channel Availability, Preview &amp; Delivery Mode
           </h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <label className="flex items-start gap-3 p-4 rounded-md border border-slate-200 cursor-pointer hover:border-slate-300">
               <input
                 type="checkbox"
@@ -264,6 +420,21 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
                 <div className="text-sm font-semibold text-slate-900">Enable WhatsApp</div>
                 <div className="text-xs text-slate-500 mt-0.5">
                   Allow staff to send encrypted PDF statements to member WhatsApp numbers.
+                </div>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-3 p-4 rounded-md border border-slate-200 cursor-pointer hover:border-slate-300">
+              <input
+                type="checkbox"
+                checked={form.previewBeforeDispatch}
+                onChange={(e) => setForm({ ...form, previewBeforeDispatch: e.target.checked })}
+                className="mt-1 h-4 w-4 accent-[#006837]"
+              />
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Pre-Send Preview Modal</div>
+                <div className="text-xs text-slate-500 mt-0.5">
+                  Allow staff to view parsed details and PDF preview before sending.
                 </div>
               </div>
             </label>
@@ -639,6 +810,86 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
           </button>
         </div>
       </form>
+
+      {/* Unsaved Settings Changes Confirmation Dialog */}
+      <AnimatePresence>
+        {activePendingAction && (
+          <motion.div
+            key="unsaved-settings-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            onClick={clearPendingModal}
+            className="fixed inset-0 z-50 bg-[#0F2437]/55 backdrop-blur-[2px] flex items-center justify-center p-4"
+          >
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="unsaved-settings-title"
+              initial={{ opacity: 0, y: 12, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.97 }}
+              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white rounded-xl border border-slate-200 shadow-[0_20px_50px_rgba(15,36,55,0.24)] overflow-hidden"
+            >
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center shrink-0">
+                    <AlertTriangle className="w-4 h-4" aria-hidden="true" />
+                  </div>
+                  <h2 id="unsaved-settings-title" className="font-display text-base font-bold text-[#0F2437]">
+                    Unsaved Settings Changes
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearPendingModal}
+                  aria-label="Cancel and stay on settings"
+                  className="p-1.5 rounded text-slate-400 hover:text-[#0F2437] hover:bg-slate-100 cursor-pointer"
+                >
+                  <X className="w-4 h-4" aria-hidden="true" />
+                </button>
+              </div>
+
+              <div className="px-5 py-4 text-sm text-slate-600 leading-relaxed">
+                You have modified system configuration settings that have not been saved to SQLite yet. Save your changes before{' '}
+                {activePendingAction.type === 'tab'
+                  ? `navigating to ${activePendingAction.targetTab === 'dispatch' ? 'Self Service' : 'Audit Logs'}`
+                  : 'refreshing settings'}
+                , or discard them to continue?
+              </div>
+
+              <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={clearPendingModal}
+                  className="px-3.5 py-2 rounded border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={handleIgnoreAndProceed}
+                  className="px-3.5 py-2 rounded border border-red-200 bg-white text-xs font-bold text-red-700 hover:bg-red-50 cursor-pointer disabled:opacity-50"
+                >
+                  Ignore Changes &amp; Proceed
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={handleSaveAndProceed}
+                  className="px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-bold hover:bg-[#226430] cursor-pointer disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : 'Save & Proceed'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

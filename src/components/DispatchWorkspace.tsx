@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
   CheckCircle2,
+  Eye,
   FileText,
   Pencil,
   RefreshCw,
@@ -11,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { AppSettings, DispatchChannel, DispatchReceipt, StatementMeta } from '../types';
 import { NssfLogo } from './NssfLogo';
+import { StatementPreviewModal } from './StatementPreviewModal';
 import { toast } from './Toaster';
 
 interface DispatchWorkspaceProps {
@@ -43,6 +45,7 @@ export function DispatchWorkspace({
   const [errorMsg, setErrorMsg] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -50,6 +53,7 @@ export function DispatchWorkspace({
   useEffect(() => {
     setErrorMsg('');
     setHoveredCard(null);
+    if (step !== 'confirm') setPreviewOpen(false);
   }, [step, memberNo, file, email, whatsapp]);
 
   // Prevent browser from navigating away if user drops slightly outside the dropzone
@@ -121,11 +125,11 @@ export function DispatchWorkspace({
     }
   };
 
-  const handleDispatch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const executeDispatch = async () => {
     setErrorMsg('');
 
     if (!file || !validatedMeta) {
+      setPreviewOpen(false);
       setStep('validate');
       return;
     }
@@ -146,6 +150,7 @@ export function DispatchWorkspace({
         setErrorMsg(msg);
         toast.error('Statement dispatch failed', msg);
       } else {
+        setPreviewOpen(false);
         toast.success(
           data.deliveryMode === 'live' ? 'Statement dispatched' : 'Statement packaged (Preview)',
           `${data.renamedFile} encrypted and logged to SQLite.`
@@ -159,6 +164,11 @@ export function DispatchWorkspace({
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleDispatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await executeDispatch();
   };
 
   const acceptSelectedFile = (candidate: File | null | undefined) => {
@@ -788,6 +798,20 @@ export function DispatchWorkspace({
             </div>
 
             <div className="space-y-3 pt-2">
+              {settings.previewBeforeDispatch && (
+                <motion.button
+                  type="button"
+                  whileHover={{ y: -1 }}
+                  whileTap={{ scale: 0.99 }}
+                  transition={{ duration: 0.15, ease: SMOOTH_EASE }}
+                  onClick={() => setPreviewOpen(true)}
+                  className="w-full h-12 rounded border border-[#2B7A3B] bg-white hover:bg-emerald-50 text-[#1E6B34] text-xs font-bold tracking-[0.16em] uppercase inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                >
+                  <Eye className="w-4 h-4" aria-hidden="true" />
+                  <span>PREVIEW PARSED DETAILS &amp; PDF</span>
+                </motion.button>
+              )}
+
               <motion.button
                 type="submit"
                 disabled={submitting}
@@ -815,6 +839,22 @@ export function DispatchWorkspace({
           </motion.form>
         )}
       </AnimatePresence>
+
+      {settings.previewBeforeDispatch && (
+        <StatementPreviewModal
+          open={previewOpen}
+          file={file}
+          meta={validatedMeta}
+          predictedFilename={predictedFilename}
+          channel={channel}
+          email={email}
+          whatsapp={whatsapp}
+          passwordMode={settings.passwordMode}
+          submitting={submitting}
+          onClose={() => setPreviewOpen(false)}
+          onConfirmDispatch={executeDispatch}
+        />
+      )}
     </div>
   );
 }

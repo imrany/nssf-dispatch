@@ -4,7 +4,7 @@ import { AuditLogsView } from './components/AuditLogsView';
 import { DispatchSuccess } from './components/DispatchSuccess';
 import { DispatchWorkspace } from './components/DispatchWorkspace';
 import { Header } from './components/Header';
-import { SettingsView } from './components/SettingsView';
+import { SettingsView, type PendingSettingsAction } from './components/SettingsView';
 import { Toaster } from './components/Toaster';
 import type { ActiveTab, AppSettings, DispatchReceipt } from './types';
 
@@ -24,12 +24,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   filenameTemplate: 'NSSF_Statement_{memberNo}_{date}.pdf',
   passwordMode: 'id_card',
   portalUrl: 'https://nssfdigital.enssf.co.ke',
+  previewBeforeDispatch: true,
 };
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dispatch');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [receipt, setReceipt] = useState<DispatchReceipt | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [pendingSettingsAction, setPendingSettingsAction] =
+    useState<PendingSettingsAction | null>(null);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -42,11 +46,19 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const handleTabChange = (tab: ActiveTab) => {
+  const navigateDirectToTab = (tab: ActiveTab) => {
     setActiveTab(tab);
     if (tab !== 'dispatch') {
       setReceipt(null);
     }
+  };
+
+  const handleTabChange = (tab: ActiveTab) => {
+    if (activeTab === 'settings' && tab !== 'settings' && settingsDirty) {
+      setPendingSettingsAction({ type: 'tab', targetTab: tab });
+      return;
+    }
+    navigateDirectToTab(tab);
   };
 
   const viewKey = activeTab === 'dispatch' ? (receipt ? 'dispatch-success' : 'dispatch-form') : activeTab;
@@ -92,6 +104,10 @@ export default function App() {
                 <SettingsView
                   settings={settings}
                   onSettingsUpdated={(updated) => setSettings(updated)}
+                  pendingNavigation={pendingSettingsAction}
+                  onClearPendingNavigation={() => setPendingSettingsAction(null)}
+                  onDirtyChange={setSettingsDirty}
+                  onProceedToTab={navigateDirectToTab}
                 />
               )}
             </motion.div>

@@ -18,6 +18,7 @@ export interface AppSettings {
   filenameTemplate: string;
   passwordMode: 'id_card' | 'id_and_nssf_last4';
   portalUrl: string;
+  previewBeforeDispatch: boolean;
 }
 
 export interface WhatsAppSessionRecord {
@@ -96,6 +97,7 @@ export function initDb(): void {
     filenameTemplate: 'NSSF_Statement_{memberNo}_{date}.pdf',
     passwordMode: 'id_card',
     portalUrl: 'https://nssfdigital.enssf.co.ke',
+    previewBeforeDispatch: 'true',
   };
 
   const insertDefault = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -128,6 +130,7 @@ export function getRawSettings(): AppSettings {
     filenameTemplate: map.filenameTemplate || 'NSSF_Statement_{memberNo}_{date}.pdf',
     passwordMode: map.passwordMode === 'id_and_nssf_last4' ? 'id_and_nssf_last4' : 'id_card',
     portalUrl: map.portalUrl || 'https://nssfdigital.enssf.co.ke',
+    previewBeforeDispatch: map.previewBeforeDispatch !== 'false',
   };
 }
 
@@ -168,6 +171,7 @@ export function saveSettings(input: Partial<AppSettings> & { clearSmtpPass?: boo
     ['filenameTemplate', (input.filenameTemplate ?? current.filenameTemplate).trim()],
     ['passwordMode', input.passwordMode ?? current.passwordMode],
     ['portalUrl', (input.portalUrl ?? current.portalUrl).trim()],
+    ['previewBeforeDispatch', String(input.previewBeforeDispatch ?? current.previewBeforeDispatch)],
   ];
 
   const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
