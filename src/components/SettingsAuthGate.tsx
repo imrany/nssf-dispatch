@@ -2,23 +2,23 @@ import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   AlertCircle,
+  ArrowLeft,
   Eye,
   EyeOff,
   KeyRound,
   Lock,
-  ShieldCheck,
-  UserPlus,
 } from 'lucide-react';
 import type { AdminAuthStatus, AppSettings } from '../types';
 import { toast } from './Toaster';
 
 interface SettingsAuthGateProps {
   onAuthenticated: (token: string, username: string, fullSettings: AppSettings) => void;
+  onBackToDispatch: () => void;
 }
 
 const SMOOTH_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
-export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
+export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: SettingsAuthGateProps) {
   const [status, setStatus] = useState<AdminAuthStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [statusError, setStatusError] = useState('');
@@ -148,7 +148,17 @@ export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
 
   if (loadingStatus) {
     return (
-      <div className="py-12 max-w-md mx-auto">
+      <div className="py-12 max-w-md mx-auto space-y-4">
+        <div>
+          <button
+            type="button"
+            onClick={onBackToDispatch}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Back to Service Desk</span>
+          </button>
+        </div>
         <div className="bg-white border border-slate-200 rounded-xl p-8 text-center shadow-[0_6px_28px_rgba(15,36,55,0.06)] space-y-3">
           <div className="w-11 h-11 rounded-full bg-emerald-50 border border-emerald-200 text-[#2B7A3B] flex items-center justify-center mx-auto">
             <Lock className="w-5 h-5" aria-hidden="true" />
@@ -163,7 +173,17 @@ export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
 
   if (statusError || !status) {
     return (
-      <div className="py-12 max-w-md mx-auto">
+      <div className="py-12 max-w-md mx-auto space-y-4">
+        <div>
+          <button
+            type="button"
+            onClick={onBackToDispatch}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Back to Service Desk</span>
+          </button>
+        </div>
         <div className="bg-white border border-red-200 rounded-xl p-8 text-center shadow-[0_6px_28px_rgba(15,36,55,0.06)] space-y-4">
           <AlertCircle className="w-8 h-8 text-red-600 mx-auto" aria-hidden="true" />
           <div className="text-sm font-semibold text-[#0F2437]">
@@ -184,7 +204,18 @@ export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
   const isSetupMode = !status.adminExists;
 
   return (
-    <div className="py-6 sm:py-10 max-w-lg mx-auto">
+    <div className="py-6 sm:py-10 max-w-lg mx-auto space-y-4">
+      <div>
+        <button
+          type="button"
+          onClick={onBackToDispatch}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+          <span>Back to Service Desk</span>
+        </button>
+      </div>
+
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -193,11 +224,11 @@ export function SettingsAuthGate({ onAuthenticated }: SettingsAuthGateProps) {
       >
         <div className="py-5 border-b-4 border-[#2B7A3B] flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-           <div>
-              <div className="text-[11px] font-bold uppercase tracking-[0.16em]">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#1E6B34]">
                 Settings
               </div>
-              <h1 className="font-display text-xl font-extrabold tracking-tight">
+              <h1 className="font-display text-xl font-extrabold tracking-tight text-[#0F2437]">
                 {isSetupMode ? 'Setup Admin Account' : 'Administrator Sign in'}
               </h1>
             </div>

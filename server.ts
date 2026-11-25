@@ -150,11 +150,87 @@ function buildRenamedFile(template: string, memberNo: string): string {
   return safeName.toLowerCase().endsWith('.pdf') ? safeName : `${safeName}.pdf`;
 }
 
+function parseSafeGoServiceUrl(rawUrl: string): URL {
+  const parsed = new URL((rawUrl || '').trim());
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Go service URL must use http or https.');
+  }
+  if (parsed.hostname === '169.254.169.254' || parsed.hostname === 'metadata.google.internal') {
+    throw new Error('Disallowed metadata host for Go service URL.');
+  }
+  return parsed;
+}
+
+async function probeGoService(rawUrl: string): Promise<{ reachable: boolean; details?: Record<string, unknown>; error?: string }> {
+  try {
+    const parsed = parseSafeGoServiceUrl(rawUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`${parsed.origin}/api/health`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!resp.ok) {
+      return { reachable: false, error: `Go service returned HTTP ${resp.status}` };
+    }
+    const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+    if (data && data.engine === 'go') {
+      return { reachable: true, details: data };
+    }
+    return { reachable: false, error: 'Target endpoint did not identify as NSSF Go service.' };
+  } catch (err) {
+    return {
+      reachable: false,
+      error: err instanceof Error ? err.message : 'Unable to reach Go service.',
+    };
+  }
+}
+
 async function startServer() {
   initDb();
 
   const app = express();
   app.use(express.json({ limit: '2mb' }));
+
+  app.get('/api/health', (_req, res) => {
+    res.json({ ok: true, engine: 'node', port: 3000 });
+  });
+
+  app.get('/api/system/runtime', async (req, res) => {
+    const cfg = getRawSettings();
+    const verified = verifyAdminSessionToken(extractBearerToken(req));
+    let goServiceReachable = false;
+    let goEngineInfo: Record<string, unknown> | undefined;
+    if (cfg.goServiceUrl && (cfg.goServiceEnabled || verified.valid)) {
+      const probe = await probeGoService(cfg.goServiceUrl);
+      goServiceReachable = probe.reachable;
+      goEngineInfo = probe.details;
+    }
+    res.json({
+      ok: true,
+      activeEngine: cfg.goServiceEnabled ? 'go-proxy' : 'node',
+      goServiceEnabled: cfg.goServiceEnabled,
+      goServiceUrl: verified.valid ? cfg.goServiceUrl : '',
+      goServiceReachable,
+      goEngineInfo: verified.valid ? goEngineInfo : undefined,
+    });
+  });
+
+  app.post('/api/system/test-go', requireAdminAuth, async (req, res) => {
+    const current = getRawSettings();
+    const targetUrl = String(req.body?.goServiceUrl ?? current.goServiceUrl).trim();
+    const probe = await probeGoService(targetUrl);
+    if (!probe.reachable) {
+      res.status(400).json({
+        ok: false,
+        error: probe.error || `Unable to reach Go service at ${targetUrl}`,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      message: `Connected to NSSF Go service at ${targetUrl}`,
+      details: probe.details,
+    });
+  });
 
   // 1. Validate PDF against entered Member NSSF Number
   app.post('/api/validate', async (req, res) => {
@@ -167,8 +243,30 @@ async function startServer() {
         return;
       }
 
-      const meta = extractAndValidatePdf(file.data, memberNo);
       const cfg = getRawSettings();
+      if (cfg.goServiceEnabled) {
+        try {
+          const goUrl = parseSafeGoServiceUrl(cfg.goServiceUrl);
+          const form = new FormData();
+          form.append('memberNo', memberNo);
+          form.append('statement', new Blob([new Uint8Array(file.data)], { type: file.contentType }), file.filename);
+          const goResp = await fetch(`${goUrl.origin}/api/validate`, {
+            method: 'POST',
+            body: form,
+          });
+          const payload = await goResp.json();
+          res.status(goResp.status).json(payload);
+          return;
+        } catch (err) {
+          res.status(502).json({
+            ok: false,
+            error: `Go service unreachable at ${cfg.goServiceUrl}: ${err instanceof Error ? err.message : 'connection failed'}`,
+          });
+          return;
+        }
+      }
+
+      const meta = extractAndValidatePdf(file.data, memberNo);
       const renamedFile = buildRenamedFile(cfg.filenameTemplate, meta.memberNo);
 
       res.json({
@@ -212,6 +310,33 @@ async function startServer() {
         return;
       }
 
+      const cfg = getRawSettings();
+
+      if (cfg.goServiceEnabled) {
+        try {
+          const goUrl = parseSafeGoServiceUrl(cfg.goServiceUrl);
+          const form = new FormData();
+          form.append('memberNo', memberNo);
+          form.append('channel', channel);
+          form.append('email', email);
+          form.append('whatsapp', whatsapp);
+          form.append('statement', new Blob([new Uint8Array(file.data)], { type: file.contentType }), file.filename);
+          const goResp = await fetch(`${goUrl.origin}/api/dispatch`, {
+            method: 'POST',
+            body: form,
+          });
+          const payload = await goResp.json();
+          res.status(goResp.status).json(payload);
+          return;
+        } catch (err) {
+          res.status(502).json({
+            ok: false,
+            error: `Go service unreachable at ${cfg.goServiceUrl}: ${err instanceof Error ? err.message : 'connection failed'}`,
+          });
+          return;
+        }
+      }
+
       if ((channel === 'email' || channel === 'both') && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         res.status(400).json({ ok: false, error: 'Please enter a valid member email address.' });
         return;
@@ -221,8 +346,6 @@ async function startServer() {
         res.status(400).json({ ok: false, error: 'Please enter a valid member WhatsApp phone number.' });
         return;
       }
-
-      const cfg = getRawSettings();
 
       if ((channel === 'email' || channel === 'both') && !cfg.emailEnabled) {
         res.status(400).json({ ok: false, error: 'Email dispatch is disabled in System Settings.' });
@@ -252,7 +375,7 @@ async function startServer() {
         return;
       }
 
-      // Step 2: Derive password from member credentials & encrypt PDF (RC4-128)
+      // Step 2: Derive password from member credentials, then encrypt PDF (RC4-128)
       const rawPassword =
         cfg.passwordMode === 'id_and_nssf_last4'
           ? `${meta.idCardNo}${meta.memberNo.slice(-4)}`
@@ -400,15 +523,34 @@ async function startServer() {
   });
 
   // 3. Download freshly encrypted PDF receipt copy
-  app.get('/api/download/:token', (req, res) => {
+  app.get('/api/download/:token', async (req, res) => {
     const entry = protectedPdfCache.get(req.params.token);
-    if (!entry || entry.expiresAt < Date.now()) {
-      res.status(404).json({ ok: false, error: 'Protected PDF link expired. Re-run dispatch to generate a new copy.' });
+    if (entry && entry.expiresAt >= Date.now()) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${entry.filename}"`);
+      res.send(entry.pdf);
       return;
     }
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${entry.filename}"`);
-    res.send(entry.pdf);
+
+    const cfg = getRawSettings();
+    if (cfg.goServiceEnabled) {
+      try {
+        const goUrl = parseSafeGoServiceUrl(cfg.goServiceUrl);
+        const goResp = await fetch(`${goUrl.origin}/api/download/${encodeURIComponent(req.params.token)}`);
+        if (goResp.ok) {
+          const buf = Buffer.from(await goResp.arrayBuffer());
+          const disp = goResp.headers.get('content-disposition') || 'attachment; filename="NSSF_Statement.pdf"';
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Disposition', disp);
+          res.send(buf);
+          return;
+        }
+      } catch {
+        // fall through to 404
+      }
+    }
+
+    res.status(404).json({ ok: false, error: 'Protected PDF link expired. Re-run dispatch to generate a new copy.' });
   });
 
   // 4. Settings Admin Auth Endpoints (SQLite scrypt + Signed Bearer Tokens)

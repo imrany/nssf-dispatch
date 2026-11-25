@@ -68,6 +68,13 @@ export function DispatchWorkspace({
     if (step !== 'confirm') setPreviewOpen(false);
   }, [step, memberNo, file, email, whatsapp]);
 
+  useEffect(() => {
+    if (step === 'validate') {
+      setValidatedMeta(null);
+      setPredictedFilename('');
+    }
+  }, [step, memberNo, file]);
+
   // Prevent browser from navigating away if user drops slightly outside the dropzone
   useEffect(() => {
     if (step !== 'validate') return;
@@ -98,6 +105,7 @@ export function DispatchWorkspace({
 
   const handleValidateStep = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (validating) return;
     setErrorMsg('');
 
     if (!memberNo.trim()) {
@@ -114,6 +122,7 @@ export function DispatchWorkspace({
     }
 
     setValidating(true);
+    setDragOver(false);
     const formData = new FormData();
     formData.append('memberNo', memberNo.trim());
     formData.append('statement', file);
@@ -297,7 +306,7 @@ export function DispatchWorkspace({
   };
 
   const acceptSelectedFile = (candidate: File | null | undefined) => {
-    if (!candidate) return;
+    if (validating || !candidate) return;
     const isPdf =
       candidate.type === 'application/pdf' ||
       candidate.name.toLowerCase().endsWith('.pdf');
@@ -320,6 +329,7 @@ export function DispatchWorkspace({
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (validating) return;
     dragDepthRef.current += 1;
     setDragOver(true);
   };
@@ -327,12 +337,13 @@ export function DispatchWorkspace({
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = 'copy';
+    e.dataTransfer.dropEffect = validating ? 'none' : 'copy';
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (validating) return;
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
     if (dragDepthRef.current === 0) {
       setDragOver(false);
@@ -344,6 +355,7 @@ export function DispatchWorkspace({
     e.stopPropagation();
     dragDepthRef.current = 0;
     setDragOver(false);
+    if (validating) return;
     acceptSelectedFile(e.dataTransfer.files?.[0]);
   };
 
@@ -625,13 +637,19 @@ export function DispatchWorkspace({
                     id="nssf-member-no"
                     required
                     type="text"
+                    disabled={validating}
+                    readOnly={validating}
                     placeholder="MEMBER NUMBER"
                     value={memberNo}
-                    onChange={(e) => setMemberNo(e.target.value)}
-                    className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm font-mono tabular-nums text-[#0F2437] placeholder:text-slate-400 placeholder:tracking-wider focus:outline-none focus:border-[#2B7A3B] transition-colors"
+                    onChange={(e) => {
+                      if (!validating) setMemberNo(e.target.value);
+                    }}
+                    className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm font-mono tabular-nums text-[#0F2437] placeholder:text-slate-400 placeholder:tracking-wider focus:outline-none focus:border-[#2B7A3B] disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
                   />
                   <Pencil
-                    className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none"
+                    className={`w-4 h-4 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none ${
+                      validating ? 'text-slate-300' : 'text-slate-400'
+                    }`}
                     aria-hidden="true"
                   />
                 </div>
@@ -652,31 +670,38 @@ export function DispatchWorkspace({
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    if (!validating) fileInputRef.current?.click();
+                  }}
                   role="button"
-                  tabIndex={0}
+                  tabIndex={validating ? -1 : 0}
+                  aria-disabled={validating}
                   aria-label="Upload member statement PDF via drag and drop or file browser"
                   onKeyDown={(e) => {
+                    if (validating) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       fileInputRef.current?.click();
                     }
                   }}
-                  className={`relative rounded-lg border-2 border-dashed p-6 sm:p-8 transition-colors duration-150 cursor-pointer select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2B7A3B] ${
-                    dragOver
-                      ? 'border-[#2B7A3B] bg-emerald-50/80 shadow-[0_6px_24px_rgba(43,122,59,0.12)]'
-                      : file
-                        ? 'border-[#2B7A3B]/60 bg-emerald-50/30 hover:border-[#2B7A3B]'
-                        : 'border-[#CBD5E1] bg-slate-50/40 hover:border-[#2B7A3B]/70 hover:bg-emerald-50/20'
+                  className={`relative rounded-lg border-2 border-dashed p-6 sm:p-8 transition-colors duration-150 select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2B7A3B] ${
+                    validating
+                      ? 'border-slate-200 bg-slate-100/80 opacity-75 cursor-not-allowed'
+                      : dragOver
+                        ? 'border-[#2B7A3B] bg-emerald-50/80 shadow-[0_6px_24px_rgba(43,122,59,0.12)] cursor-pointer'
+                        : file
+                          ? 'border-[#2B7A3B]/60 bg-emerald-50/30 hover:border-[#2B7A3B] cursor-pointer'
+                          : 'border-[#CBD5E1] bg-slate-50/40 hover:border-[#2B7A3B]/70 hover:bg-emerald-50/20 cursor-pointer'
                   }`}
                 >
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept="application/pdf,.pdf"
+                    disabled={validating}
                     className="sr-only"
                     onChange={(e) => {
-                      acceptSelectedFile(e.target.files?.[0]);
+                      if (!validating) acceptSelectedFile(e.target.files?.[0]);
                       e.target.value = '';
                     }}
                   />
@@ -731,7 +756,9 @@ export function DispatchWorkspace({
                             </span>
                             <span aria-hidden="true">·</span>
                             <span className="text-[#1E6B34] font-medium">
-                              PDF attached · Drop another file to replace
+                              {validating
+                                ? 'Locked during validation'
+                                : 'PDF attached · Drop another file to replace'}
                             </span>
                           </div>
                         </div>
@@ -740,14 +767,15 @@ export function DispatchWorkspace({
                       <div className="flex items-center gap-2 shrink-0">
                         <motion.button
                           type="button"
-                          whileHover={{ y: -1 }}
-                          whileTap={{ scale: 0.97 }}
+                          disabled={validating}
+                          whileHover={!validating ? { y: -1 } : undefined}
+                          whileTap={!validating ? { scale: 0.97 } : undefined}
                           transition={{ duration: 0.14, ease: SMOOTH_EASE }}
                           onClick={(e) => {
                             e.stopPropagation();
-                            fileInputRef.current?.click();
+                            if (!validating) fileInputRef.current?.click();
                           }}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-[#D1D9E0] bg-white text-xs font-semibold text-[#0F2437] hover:border-[#2B7A3B] hover:text-[#2B7A3B] transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-[#D1D9E0] bg-white text-xs font-semibold text-[#0F2437] hover:border-[#2B7A3B] hover:text-[#2B7A3B] disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
                         >
                           <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Replace</span>
@@ -755,16 +783,18 @@ export function DispatchWorkspace({
 
                         <motion.button
                           type="button"
-                          whileHover={{ y: -1 }}
-                          whileTap={{ scale: 0.97 }}
+                          disabled={validating}
+                          whileHover={!validating ? { y: -1 } : undefined}
+                          whileTap={!validating ? { scale: 0.97 } : undefined}
                           transition={{ duration: 0.14, ease: SMOOTH_EASE }}
                           onClick={(e) => {
                             e.stopPropagation();
+                            if (validating) return;
                             setFile(null);
                             setValidatedMeta(null);
                           }}
                           aria-label="Remove attached statement PDF"
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-red-200 bg-white text-xs font-semibold text-red-700 hover:bg-red-50 transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-red-200 bg-white text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
                         >
                           <X className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Remove</span>
@@ -783,18 +813,21 @@ export function DispatchWorkspace({
                 whileHover={!validating ? { y: -1 } : undefined}
                 whileTap={!validating ? { scale: 0.99 } : undefined}
                 transition={{ duration: 0.15, ease: SMOOTH_EASE }}
-                className="w-full h-12 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 cursor-pointer"
+                className="w-full h-12 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 {validating ? 'VALIDATING STATEMENT...' : 'VALIDATE'}
               </motion.button>
 
               <motion.button
                 type="button"
-                whileHover={{ y: -1 }}
-                whileTap={{ scale: 0.99 }}
+                disabled={validating}
+                whileHover={!validating ? { y: -1 } : undefined}
+                whileTap={!validating ? { scale: 0.99 } : undefined}
                 transition={{ duration: 0.15, ease: SMOOTH_EASE }}
-                onClick={() => setStep('select')}
-                className="w-full h-12 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors cursor-pointer"
+                onClick={() => {
+                  if (!validating) setStep('select');
+                }}
+                className="w-full h-12 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 BACK
               </motion.button>
@@ -894,9 +927,9 @@ export function DispatchWorkspace({
                 <motion.button
                   key={opt.id}
                   type="button"
-                  disabled={!opt.enabled}
-                  whileHover={opt.enabled ? { y: -1 } : undefined}
-                  whileTap={opt.enabled ? { scale: 0.98 } : undefined}
+                  disabled={!opt.enabled || submitting}
+                  whileHover={opt.enabled && !submitting ? { y: -1 } : undefined}
+                  whileTap={opt.enabled && !submitting ? { scale: 0.98 } : undefined}
                   transition={{ duration: 0.14, ease: SMOOTH_EASE }}
                   onClick={() => setChannel(opt.id)}
                   className={`h-11 rounded px-3 text-xs font-bold uppercase tracking-wider border inline-flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -933,10 +966,12 @@ export function DispatchWorkspace({
                       id="member-email"
                       required
                       type="email"
+                      disabled={submitting}
+                      readOnly={submitting}
                       placeholder="MEMBER EMAIL ADDRESS"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm text-[#0F2437] placeholder:text-slate-400 focus:outline-none focus:border-[#2B7A3B] transition-colors"
+                      className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm text-[#0F2437] placeholder:text-slate-400 focus:outline-none focus:border-[#2B7A3B] disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
                     />
                     <Pencil
                       className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -959,10 +994,12 @@ export function DispatchWorkspace({
                       id="member-whatsapp"
                       required
                       type="tel"
+                      disabled={submitting}
+                      readOnly={submitting}
                       placeholder="254712345678"
                       value={whatsapp}
                       onChange={(e) => setWhatsapp(e.target.value)}
-                      className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm font-mono tabular-nums text-[#0F2437] placeholder:text-slate-400 focus:outline-none focus:border-[#2B7A3B] transition-colors"
+                      className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm font-mono tabular-nums text-[#0F2437] placeholder:text-slate-400 focus:outline-none focus:border-[#2B7A3B] disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
                     />
                     <Pencil
                       className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -977,11 +1014,12 @@ export function DispatchWorkspace({
               {settings.previewBeforeDispatch && (
                 <motion.button
                   type="button"
-                  whileHover={{ y: -1 }}
-                  whileTap={{ scale: 0.99 }}
+                  disabled={submitting}
+                  whileHover={!submitting ? { y: -1 } : undefined}
+                  whileTap={!submitting ? { scale: 0.99 } : undefined}
                   transition={{ duration: 0.15, ease: SMOOTH_EASE }}
                   onClick={() => setPreviewOpen(true)}
-                  className="w-full h-12 rounded border border-[#2B7A3B] bg-white hover:bg-emerald-50 text-[#1E6B34] text-xs font-bold tracking-[0.16em] uppercase inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  className="w-full h-12 rounded border border-[#2B7A3B] bg-white hover:bg-emerald-50 text-[#1E6B34] text-xs font-bold tracking-[0.16em] uppercase inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <Eye className="w-4 h-4" aria-hidden="true" />
                   <span>PREVIEW PARSED DETAILS &amp; PDF</span>
@@ -997,7 +1035,7 @@ export function DispatchWorkspace({
                 whileHover={!submitting ? { y: -1 } : undefined}
                 whileTap={!submitting ? { scale: 0.99 } : undefined}
                 transition={{ duration: 0.15, ease: SMOOTH_EASE }}
-                className="w-full h-12 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 cursor-pointer"
+                className="w-full h-12 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 {submitting
                   ? 'ENCRYPTING & DISPATCHING...'
@@ -1006,11 +1044,14 @@ export function DispatchWorkspace({
 
               <motion.button
                 type="button"
-                whileHover={{ y: -1 }}
-                whileTap={{ scale: 0.99 }}
+                disabled={submitting}
+                whileHover={!submitting ? { y: -1 } : undefined}
+                whileTap={!submitting ? { scale: 0.99 } : undefined}
                 transition={{ duration: 0.15, ease: SMOOTH_EASE }}
-                onClick={() => setStep('validate')}
-                className="w-full h-12 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors cursor-pointer"
+                onClick={() => {
+                  if (!submitting) setStep('validate');
+                }}
+                className="w-full h-12 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 BACK
               </motion.button>

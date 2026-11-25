@@ -21,6 +21,7 @@ type StatementMeta struct {
 	MemberNo        string `json:"memberNo"`
 	MemberName      string `json:"memberName"`
 	IDCardNo        string `json:"idCardNo"`
+	MaskedIDCardNo  string `json:"maskedIdCardNo,omitempty"`
 	DateOfBirth     string `json:"dateOfBirth"`
 	DateRegistered  string `json:"dateRegistered"`
 	KRAPin          string `json:"kraPin"`
@@ -346,6 +347,9 @@ func ExtractAndValidatePDF(pdfBytes []byte, expectedMemberNo string) (*Statement
 	if memberNo == "" {
 		return nil, errors.New("could not read NSSF Member Number from uploaded PDF")
 	}
+	if strings.TrimSpace(expectedMemberNo) == "" {
+		return nil, errors.New("please enter the Member NSSF Number before validating")
+	}
 	if !strings.EqualFold(strings.TrimSpace(memberNo), strings.TrimSpace(expectedMemberNo)) {
 		return nil, fmt.Errorf("validation mismatch: entered NSSF Number (%s) does not match statement (%s)", expectedMemberNo, memberNo)
 	}
@@ -370,6 +374,7 @@ func ExtractAndValidatePDF(pdfBytes []byte, expectedMemberNo string) (*Statement
 		MemberNo:        memberNo,
 		MemberName:      defaultStr(findField(fullText, `(?i)Member Name:\s*([A-Za-z0-9\s.'-]+?)(?:\s+KRA Pin No:|\s+Date of Birth:|\s+Benefit Type|\n|$)`), "NSSF Member"),
 		IDCardNo:        idCard,
+		MaskedIDCardNo:  maskSecret(idCard),
 		DateOfBirth:     findField(fullText, `(?i)Date of Birth:\s*([0-9]{2}[./-][0-9]{2}[./-][0-9]{4})`),
 		DateRegistered:  findField(fullText, `(?i)Date Registered:\s*([0-9]{2}[./-][0-9]{2}[./-][0-9]{4})`),
 		KRAPin:          findField(fullText, `(?i)KRA Pin No:\s*([AP][0-9]{9}[A-Z])\b`),

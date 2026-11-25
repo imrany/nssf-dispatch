@@ -286,6 +286,17 @@ export function AuditLogsView({
 
   return (
     <div className="py-4 sm:py-8 space-y-6">
+      <div>
+        <button
+          type="button"
+          onClick={onBackToSettings}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+          <span>Back to Settings</span>
+        </button>
+      </div>
+
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <div className="text-[11px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
@@ -300,18 +311,6 @@ export function AuditLogsView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <motion.button
-            type="button"
-            whileHover={{ y: -1 }}
-            whileTap={{ scale: 0.98 }}
-            transition={{ duration: 0.14, ease: SMOOTH_EASE }}
-            onClick={onBackToSettings}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 cursor-pointer whitespace-nowrap"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Back to Settings</span>
-          </motion.button>
-
           <motion.button
             type="button"
             whileHover={{ y: -1 }}

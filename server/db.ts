@@ -22,6 +22,8 @@ export interface AppSettings {
   previewBeforeDispatch: boolean;
   emailSubjectTemplate: string;
   whatsappMessageTemplate: string;
+  goServiceEnabled: boolean;
+  goServiceUrl: string;
 }
 
 export const DEFAULT_EMAIL_SUBJECT_TEMPLATE =
@@ -126,6 +128,8 @@ export function initDb(): void {
     previewBeforeDispatch: 'true',
     emailSubjectTemplate: DEFAULT_EMAIL_SUBJECT_TEMPLATE,
     whatsappMessageTemplate: DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+    goServiceEnabled: 'false',
+    goServiceUrl: (process.env.GO_SERVICE_URL || 'http://127.0.0.1:8080').trim(),
   };
 
   const insertDefault = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -161,6 +165,8 @@ export function getRawSettings(): AppSettings {
     previewBeforeDispatch: map.previewBeforeDispatch !== 'false',
     emailSubjectTemplate: map.emailSubjectTemplate || DEFAULT_EMAIL_SUBJECT_TEMPLATE,
     whatsappMessageTemplate: map.whatsappMessageTemplate || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+    goServiceEnabled: map.goServiceEnabled === 'true',
+    goServiceUrl: map.goServiceUrl || (process.env.GO_SERVICE_URL || 'http://127.0.0.1:8080').trim(),
   };
 }
 
@@ -195,6 +201,8 @@ export function getSafeWorkspaceSettings(): Omit<AppSettings, 'smtpPass'> & { ha
     previewBeforeDispatch: raw.previewBeforeDispatch,
     emailSubjectTemplate: '',
     whatsappMessageTemplate: '',
+    goServiceEnabled: raw.goServiceEnabled,
+    goServiceUrl: '',
   };
 }
 
@@ -209,6 +217,7 @@ export function saveSettings(input: Partial<AppSettings> & { clearSmtpPass?: boo
   const nextPaired = input.whatsappPaired ?? current.whatsappPaired;
   const nextBridgeUrl = (input.whatsappBridgeUrl ?? current.whatsappBridgeUrl).trim();
   const nextDeviceName = (input.whatsappDeviceName ?? current.whatsappDeviceName).trim();
+  const nextGoServiceUrl = (input.goServiceUrl ?? current.goServiceUrl).trim() || 'http://127.0.0.1:8080';
 
   const entries: Array<[string, string]> = [
     ['smtpHost', (input.smtpHost ?? current.smtpHost).trim()],
@@ -237,6 +246,8 @@ export function saveSettings(input: Partial<AppSettings> & { clearSmtpPass?: boo
       (input.whatsappMessageTemplate ?? current.whatsappMessageTemplate).trim() ||
         DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
     ],
+    ['goServiceEnabled', String(input.goServiceEnabled ?? current.goServiceEnabled)],
+    ['goServiceUrl', nextGoServiceUrl],
   ];
 
   const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');

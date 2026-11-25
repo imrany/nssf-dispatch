@@ -70,6 +70,17 @@ export interface AppSettings {
   previewBeforeDispatch: boolean;
   emailSubjectTemplate: string;
   whatsappMessageTemplate: string;
+  goServiceEnabled?: boolean;
+  goServiceUrl?: string;
+}
+
+export interface SystemRuntimeInfo {
+  ok: boolean;
+  activeEngine: 'node' | 'go' | 'go-proxy';
+  goServiceEnabled: boolean;
+  goServiceUrl: string;
+  goServiceReachable: boolean;
+  goEngineInfo?: Record<string, unknown>;
 }
 
 export interface WhatsAppQrData {

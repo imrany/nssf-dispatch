@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   CheckCircle2,
   ChevronUp,
@@ -20,7 +21,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { ActiveTab, AppSettings, WhatsAppQrData } from '../types';
+import type { ActiveTab, AppSettings, SystemRuntimeInfo, WhatsAppQrData } from '../types';
 import { toast } from './Toaster';
 
 const DEFAULT_EMAIL_SUBJECT_TEMPLATE =
@@ -94,6 +95,7 @@ interface SettingsViewProps {
   onClearPendingNavigation: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onProceedToTab: (tab: ActiveTab) => void;
+  onBackToDispatch: () => void;
   onOpenAuditLogs: () => void;
   onLogout: () => void;
   onAuthExpired: () => void;
@@ -108,6 +110,7 @@ export function SettingsView({
   onClearPendingNavigation,
   onDirtyChange,
   onProceedToTab,
+  onBackToDispatch,
   onOpenAuditLogs,
   onLogout,
   onAuthExpired,
@@ -125,6 +128,10 @@ export function SettingsView({
   const [qrData, setQrData] = useState<WhatsAppQrData | null>(null);
   const [loadingQr, setLoadingQr] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
+
+  const [runtimeInfo, setRuntimeInfo] = useState<SystemRuntimeInfo | null>(null);
+  const [testingGo, setTestingGo] = useState(false);
+  const [goTestResult, setGoTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [templatesExpanded, setTemplatesExpanded] = useState(false);
   const [activeTemplateField, setActiveTemplateField] = useState<'subject' | 'whatsapp'>('whatsapp');
@@ -153,7 +160,9 @@ export function SettingsView({
       form.portalUrl !== settings.portalUrl ||
       form.previewBeforeDispatch !== settings.previewBeforeDispatch ||
       form.emailSubjectTemplate !== settings.emailSubjectTemplate ||
-      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate
+      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate ||
+      Boolean(form.goServiceEnabled) !== Boolean(settings.goServiceEnabled) ||
+      (form.goServiceUrl ?? 'http://127.0.0.1:8080') !== (settings.goServiceUrl ?? 'http://127.0.0.1:8080')
     );
   }, [form, settings]);
 
@@ -224,9 +233,25 @@ export function SettingsView({
     [adminToken, onAuthExpired, onSettingsUpdated, settings.whatsappPaired]
   );
 
+  const loadRuntime = useCallback(async () => {
+    try {
+      const res = await fetch('/api/system/runtime', {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as SystemRuntimeInfo;
+      if (data && data.ok) {
+        setRuntimeInfo(data);
+      }
+    } catch {
+      // Ignore transient runtime probe errors
+    }
+  }, [adminToken]);
+
   useEffect(() => {
     loadQr(false);
-  }, [loadQr]);
+    loadRuntime();
+  }, [loadQr, loadRuntime]);
 
   // Poll /api/whatsapp/status every 5 seconds while device is not yet paired
   useEffect(() => {
@@ -295,6 +320,7 @@ export function SettingsView({
       } else {
         onSettingsUpdated(data.settings);
         setForm({ ...data.settings, smtpPass: '' });
+        void loadRuntime();
         const msg = 'System configuration saved to SQLite database.';
         setSaveNotice(msg);
         toast.success('Settings saved', msg);
@@ -343,6 +369,7 @@ export function SettingsView({
         setForm({ ...data, smtpPass: '' });
       }
       await loadQr(false);
+      await loadRuntime();
       toast.success('Settings refreshed', 'Loaded latest saved configuration from SQLite.');
     } catch {
       toast.error('Refresh failed', 'Unable to reload settings from server.');
@@ -359,11 +386,54 @@ export function SettingsView({
     }
   };
 
+  const handleBackToDispatchClick = () => {
+    if (isDirty) {
+      setLocalPendingAction({ type: 'tab', targetTab: 'dispatch' });
+    } else {
+      onBackToDispatch();
+    }
+  };
+
   const handleLockButtonClick = () => {
     if (isDirty) {
       setLocalPendingAction({ type: 'lock_settings' });
     } else {
       onLogout();
+    }
+  };
+
+  const handleTestGoService = async () => {
+    setTestingGo(true);
+    setGoTestResult(null);
+    try {
+      const res = await fetch('/api/system/test-go', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({ goServiceUrl: form.goServiceUrl || 'http://127.0.0.1:8080' }),
+      });
+      if (res.status === 401) {
+        onAuthExpired();
+        return;
+      }
+      const data = await res.json();
+      const ok = Boolean(data.ok);
+      const text = ok ? data.message : data.error || 'Go service connection test failed.';
+      setGoTestResult({ ok, text });
+      if (ok) {
+        toast.success('Go service reachable', text);
+        await loadRuntime();
+      } else {
+        toast.error('Go service test failed', text);
+      }
+    } catch {
+      const text = 'Unable to reach server to test Go service.';
+      setGoTestResult({ ok: false, text });
+      toast.error('Go service test failed', text);
+    } finally {
+      setTestingGo(false);
     }
   };
 
@@ -501,6 +571,17 @@ export function SettingsView({
 
   return (
     <div className="py-4 sm:py-8 space-y-6">
+      <div>
+        <button
+          type="button"
+          onClick={handleBackToDispatchClick}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+          <span>Back to Service Desk</span>
+        </button>
+      </div>
+
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <div className="text-[11px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
@@ -517,32 +598,32 @@ export function SettingsView({
               </span>
             )}
           </div>
-          <p className="text-sm text-slate-600 mt-1">
-            Configure Email (SMTP), pair the NSSF WhatsApp desk device via QR code, and manage defaults.
-          </p>
-        </div>
+            <p className="text-sm text-slate-600 mt-1">
+              Signed in as <strong className="text-[#0F2437]">{adminUsername}</strong> · Configure Email (SMTP), pair WhatsApp, manage Go service integration, and templates.
+            </p>
+          </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={handleRefreshButtonClick}
-            disabled={refreshingSettings}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 disabled:opacity-50 cursor-pointer whitespace-nowrap"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshingSettings ? 'animate-spin' : ''}`} aria-hidden="true" />
-            <span>{refreshingSettings ? 'Refreshing...' : 'Refresh Settings'}</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleRefreshButtonClick}
+              disabled={refreshingSettings}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshingSettings ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <span>{refreshingSettings ? 'Refreshing...' : 'Refresh Settings'}</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={handleLockButtonClick}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-slate-300 bg-white text-xs font-bold tracking-wider uppercase text-slate-700 hover:border-red-300 hover:text-red-700 hover:bg-red-50/60 cursor-pointer whitespace-nowrap transition-colors"
-          >
-            <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Lock Settings</span>
-          </button>
+            <button
+              type="button"
+              onClick={handleLockButtonClick}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-slate-300 bg-white text-xs font-bold tracking-wider uppercase text-slate-700 hover:border-red-300 hover:text-red-700 hover:bg-red-50/60 cursor-pointer whitespace-nowrap transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Lock Settings</span>
+            </button>
+          </div>
         </div>
-      </div>
 
       {saveNotice && (
         <div className="bg-emerald-50 border border-emerald-200 rounded-md p-3.5 flex items-center gap-2 text-sm text-[#006837] font-medium">
@@ -960,14 +1041,95 @@ export function SettingsView({
             </div>
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-md p-3.5 text-xs text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <strong className="text-slate-800">Standalone Go Packaging:</strong>{' '}
-              Zero-dependency Go source in <code className="text-[#006837]">go/cmd/server</code> embeds{' '}
-              <code>dist/*</code>, links NSSF crest icon &amp; publisher metadata via{' '}
-              <code>go/packaging/windows/app.rc</code>, and stores settings/logs in SQLite.
+          <div className="bg-slate-50 border border-slate-200 rounded-md p-4 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="text-xs text-slate-600">
+                <strong className="text-slate-800">Go Backend Service Integration:</strong>{' '}
+                Run the standalone Go server in <code className="text-[#006837]">go/cmd/server</code> for native PDF validation, encryption, and dispatch, or proxy requests to it from the Node.js workspace.
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span
+                  className={`px-2.5 py-1 rounded text-[11px] font-bold uppercase tracking-wider border ${
+                    runtimeInfo?.activeEngine === 'go'
+                      ? 'bg-emerald-50 text-[#1E6B34] border-emerald-200'
+                      : runtimeInfo?.activeEngine === 'go-proxy'
+                        ? runtimeInfo.goServiceReachable
+                          ? 'bg-emerald-50 text-[#1E6B34] border-emerald-200'
+                          : 'bg-amber-50 text-amber-800 border-amber-200'
+                        : 'bg-white text-slate-700 border-slate-300'
+                  }`}
+                >
+                  Engine:{' '}
+                  {runtimeInfo?.activeEngine === 'go'
+                    ? 'Go Standalone'
+                    : runtimeInfo?.activeEngine === 'go-proxy'
+                      ? runtimeInfo.goServiceReachable
+                        ? 'Go Proxy (Connected)'
+                        : 'Go Proxy (Fallback to Node)'
+                      : 'Node.js'}
+                </span>
+              </div>
             </div>
-            <span className="font-mono text-[11px] text-slate-500 shrink-0">go/build.sh</span>
+
+            {runtimeInfo?.activeEngine !== 'go' && (
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end pt-2 border-t border-slate-200">
+                <label className="md:col-span-5 flex items-start gap-2.5 p-2.5 rounded border border-slate-200 bg-white cursor-pointer hover:border-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(form.goServiceEnabled)}
+                    onChange={(e) => setForm({ ...form, goServiceEnabled: e.target.checked })}
+                    className="mt-0.5 h-4 w-4 accent-[#006837]"
+                  />
+                  <div className="text-xs">
+                    <div className="font-semibold text-slate-900">Delegate Dispatch to Go Service</div>
+                    <div className="text-slate-500">
+                      Proxy validate, encrypt &amp; send operations to Go backend
+                    </div>
+                  </div>
+                </label>
+
+                <div className="md:col-span-5">
+                  <label htmlFor="go-service-url" className="block text-xs font-medium text-slate-700 mb-1">
+                    Go Service Base URL
+                  </label>
+                  <input
+                    id="go-service-url"
+                    value={form.goServiceUrl ?? 'http://127.0.0.1:8080'}
+                    onChange={(e) => setForm({ ...form, goServiceUrl: e.target.value })}
+                    placeholder="http://127.0.0.1:8080"
+                    className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-xs font-mono focus:outline-none focus:border-[#006837]"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <button
+                    type="button"
+                    onClick={handleTestGoService}
+                    disabled={testingGo}
+                    className="w-full py-2 px-3 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                  >
+                    {testingGo ? 'Testing...' : 'Test Go'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {goTestResult && (
+              <div
+                className={`p-2.5 rounded border text-xs flex items-center gap-2 ${
+                  goTestResult.ok
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : 'bg-red-50 border-red-200 text-red-800'
+                }`}
+              >
+                {goTestResult.ok ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                )}
+                <span>{goTestResult.text}</span>
+              </div>
+            )}
           </div>
         </section>
 
@@ -1261,7 +1423,7 @@ export function SettingsView({
               <div className="px-5 py-4 text-sm text-slate-600 leading-relaxed">
                 You have modified system configuration settings that have not been saved to SQLite yet. Save your changes before{' '}
                 {activePendingAction.type === 'tab'
-                  ? `navigating to ${activePendingAction.targetTab === 'dispatch' ? 'Self Service' : 'Audit Logs'}`
+                  ? `navigating to ${activePendingAction.targetTab === 'dispatch' ? 'Service Desk' : 'Audit Logs'}`
                   : activePendingAction.type === 'lock_settings'
                     ? 'locking System Settings'
                     : 'refreshing settings'}
