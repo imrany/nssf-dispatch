@@ -4,8 +4,11 @@ import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  ChevronUp,
   FileText,
+  LogOut,
   Mail,
+  Pencil,
   QrCode,
   RefreshCw,
   RotateCcw,
@@ -77,24 +80,33 @@ function renderPreviewTemplate(template: string, portalUrl: string, stripNewline
 export type PendingSettingsAction =
   | { type: 'tab'; targetTab: ActiveTab }
   | { type: 'refresh_settings' }
-  | { type: 'browser_reload' };
+  | { type: 'browser_reload' }
+  | { type: 'lock_settings' };
 
 interface SettingsViewProps {
   settings: AppSettings;
+  adminToken: string;
+  adminUsername: string;
   onSettingsUpdated: (updated: AppSettings) => void;
   pendingNavigation: PendingSettingsAction | null;
   onClearPendingNavigation: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onProceedToTab: (tab: ActiveTab) => void;
+  onLogout: () => void;
+  onAuthExpired: () => void;
 }
 
 export function SettingsView({
   settings,
+  adminToken,
+  adminUsername,
   onSettingsUpdated,
   pendingNavigation,
   onClearPendingNavigation,
   onDirtyChange,
   onProceedToTab,
+  onLogout,
+  onAuthExpired,
 }: SettingsViewProps) {
   const [form, setForm] = useState<AppSettings>({ ...settings, smtpPass: '' });
   const [saving, setSaving] = useState(false);
@@ -110,6 +122,7 @@ export function SettingsView({
   const [loadingQr, setLoadingQr] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
 
+  const [templatesExpanded, setTemplatesExpanded] = useState(false);
   const [activeTemplateField, setActiveTemplateField] = useState<'subject' | 'whatsapp'>('whatsapp');
   const subjectInputRef = useRef<HTMLInputElement>(null);
   const whatsappTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -179,7 +192,13 @@ export function SettingsView({
     async (refresh = false) => {
       setLoadingQr(true);
       try {
-        const res = await fetch(refresh ? '/api/whatsapp/qr?refresh=1' : '/api/whatsapp/qr');
+        const res = await fetch(refresh ? '/api/whatsapp/qr?refresh=1' : '/api/whatsapp/qr', {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        if (res.status === 401) {
+          onAuthExpired();
+          return;
+        }
         if (!res.ok) throw new Error('Unable to load WhatsApp QR code');
         const data = (await res.json()) as WhatsAppQrData & { settings?: AppSettings };
         setQrData(data);
@@ -198,7 +217,7 @@ export function SettingsView({
         setLoadingQr(false);
       }
     },
-    [onSettingsUpdated, settings.whatsappPaired]
+    [adminToken, onAuthExpired, onSettingsUpdated, settings.whatsappPaired]
   );
 
   useEffect(() => {
@@ -212,7 +231,13 @@ export function SettingsView({
     let cancelled = false;
     const pollStatus = async () => {
       try {
-        const res = await fetch('/api/whatsapp/status');
+        const res = await fetch('/api/whatsapp/status', {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        if (res.status === 401) {
+          if (!cancelled) onAuthExpired();
+          return;
+        }
         if (!res.ok || cancelled) return;
         const data = (await res.json()) as WhatsAppQrData & { settings?: AppSettings };
         if (cancelled) return;
@@ -237,7 +262,7 @@ export function SettingsView({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [isPaired, onSettingsUpdated]);
+  }, [adminToken, isPaired, onAuthExpired, onSettingsUpdated]);
 
   const persistFormSettings = async (): Promise<boolean> => {
     setSaving(true);
@@ -247,9 +272,16 @@ export function SettingsView({
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
         body: JSON.stringify(form),
       });
+      if (res.status === 401) {
+        onAuthExpired();
+        return false;
+      }
       const data = await res.json();
       if (!res.ok || !data.ok) {
         const msg = data.error || 'Failed to save settings.';
@@ -294,7 +326,13 @@ export function SettingsView({
   const executeSettingsRefresh = async () => {
     setRefreshingSettings(true);
     try {
-      const res = await fetch('/api/settings');
+      const res = await fetch('/api/settings', {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (res.status === 401) {
+        onAuthExpired();
+        return;
+      }
       const data = (await res.json()) as AppSettings;
       if (data && typeof data.smtpHost === 'string') {
         onSettingsUpdated(data);
@@ -317,6 +355,14 @@ export function SettingsView({
     }
   };
 
+  const handleLockButtonClick = () => {
+    if (isDirty) {
+      setLocalPendingAction({ type: 'lock_settings' });
+    } else {
+      onLogout();
+    }
+  };
+
   const clearPendingModal = () => {
     setLocalPendingAction(null);
     onClearPendingNavigation();
@@ -330,6 +376,8 @@ export function SettingsView({
       await executeSettingsRefresh();
     } else if (action.type === 'browser_reload') {
       window.location.reload();
+    } else if (action.type === 'lock_settings') {
+      onLogout();
     }
   };
 
@@ -355,9 +403,16 @@ export function SettingsView({
     try {
       const res = await fetch('/api/settings/test-smtp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
         body: JSON.stringify(form),
       });
+      if (res.status === 401) {
+        onAuthExpired();
+        return;
+      }
       const data = await res.json();
       const ok = Boolean(data.ok);
       const text = ok ? data.message : data.error || 'SMTP test failed.';
@@ -379,7 +434,14 @@ export function SettingsView({
   const handleUnlinkDevice = async () => {
     setUnlinking(true);
     try {
-      const res = await fetch('/api/whatsapp/unlink', { method: 'POST' });
+      const res = await fetch('/api/whatsapp/unlink', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (res.status === 401) {
+        onAuthExpired();
+        return;
+      }
       const data = await res.json();
       if (res.ok && data.ok) {
         if (data.qrData) setQrData(data.qrData);
@@ -444,6 +506,9 @@ export function SettingsView({
             <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0F2437] tracking-tight">
               SYSTEM SETTINGS
             </h1>
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1E6B34] bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded">
+              Admin: {adminUsername}
+            </span>
             {isDirty && (
               <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded">
                 Unsaved changes
@@ -455,15 +520,26 @@ export function SettingsView({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleRefreshButtonClick}
-          disabled={refreshingSettings}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${refreshingSettings ? 'animate-spin' : ''}`} aria-hidden="true" />
-          <span>{refreshingSettings ? 'Refreshing...' : 'Refresh Settings'}</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleRefreshButtonClick}
+            disabled={refreshingSettings}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshingSettings ? 'animate-spin' : ''}`} aria-hidden="true" />
+            <span>{refreshingSettings ? 'Refreshing...' : 'Refresh Settings'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLockButtonClick}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-slate-300 bg-white text-xs font-bold tracking-wider uppercase text-slate-700 hover:border-red-300 hover:text-red-700 hover:bg-red-50/60 cursor-pointer whitespace-nowrap transition-colors"
+          >
+            <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Lock Settings</span>
+          </button>
+        </div>
       </div>
 
       {saveNotice && (
@@ -893,134 +969,209 @@ export function SettingsView({
           </div>
         </section>
 
-        {/* Templates Section: Email Subject & WhatsApp Message Body */}
-        <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-            <div className="flex items-center gap-2">
+        {/* Templates Section: Compact summary with "Edit Templates" toggle to save space */}
+        <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+            <div className="flex items-center gap-2.5">
               <FileText className="w-4 h-4 text-[#006837]" aria-hidden="true" />
-              <h2 className="font-display text-base font-semibold text-[#006837]">
-                Templates
-              </h2>
+              <div>
+                <h2 className="font-display text-base font-semibold text-[#006837]">
+                  Templates
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Customize email subject line and WhatsApp message body with dynamic placeholders.
+                </p>
+              </div>
             </div>
-            <span className="text-xs text-slate-500">
-              Click any placeholder chip to insert into the{' '}
-              <strong className="text-[#0F2437]">
-                {activeTemplateField === 'subject' ? 'Email Subject Line' : 'WhatsApp Message Body'}
-              </strong>
-            </span>
+
+            <button
+              type="button"
+              onClick={() => setTemplatesExpanded((prev) => !prev)}
+              aria-expanded={templatesExpanded}
+              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded text-xs font-bold uppercase tracking-wider border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                templatesExpanded
+                  ? 'border-slate-300 bg-slate-50 text-[#0F2437] hover:bg-slate-100'
+                  : 'border-[#2B7A3B] bg-white text-[#1E6B34] hover:bg-emerald-50'
+              }`}
+            >
+              {templatesExpanded ? (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Hide Template Editor</span>
+                </>
+              ) : (
+                <>
+                  <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Edit Templates</span>
+                </>
+              )}
+            </button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
-            {TEMPLATE_PLACEHOLDERS.map((item) => (
-              <button
-                key={item.token}
-                type="button"
-                onClick={() => insertPlaceholder(item.token)}
-                title={`Insert ${item.token} (${item.label})`}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-slate-200 bg-slate-50 hover:border-[#2B7A3B] hover:bg-emerald-50 text-xs transition-colors cursor-pointer"
+          {!templatesExpanded && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="rounded-md border border-slate-200 bg-slate-50/70 px-3.5 py-2.5">
+                <div className="font-semibold text-slate-700 mb-1">Email Subject Line</div>
+                <div className="font-mono text-[#0F2437] truncate">
+                  {form.emailSubjectTemplate || DEFAULT_EMAIL_SUBJECT_TEMPLATE}
+                </div>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50/70 px-3.5 py-2.5">
+                <div className="font-semibold text-slate-700 mb-1">WhatsApp Message Body</div>
+                <div className="font-mono text-[#0F2437] truncate">
+                  {(form.whatsappMessageTemplate || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE)
+                    .split('\n')
+                    .filter(Boolean)
+                    .slice(0, 2)
+                    .join(' · ')}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <AnimatePresence initial={false}>
+            {templatesExpanded && (
+              <motion.div
+                key="templates-editor"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                className="overflow-hidden"
               >
-                <code className="font-mono font-semibold text-[#1E6B34]">{item.token}</code>
-                <span className="text-[11px] text-slate-500">{item.label}</span>
-              </button>
-            ))}
-          </div>
+                <div className="space-y-5 pt-1">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-600">Dynamic Placeholders</span>
+                    <span className="text-xs text-slate-500">
+                      Click any chip to insert into{' '}
+                      <strong className="text-[#0F2437]">
+                        {activeTemplateField === 'subject'
+                          ? 'Email Subject Line'
+                          : 'WhatsApp Message Body'}
+                      </strong>
+                    </span>
+                  </div>
 
-          <div className="space-y-5">
-            {/* Email Subject Line Template */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <label
-                  htmlFor="email-subject-tpl"
-                  className="block text-xs font-semibold text-slate-800"
-                >
-                  Email Subject Line Template
-                </label>
-                {form.emailSubjectTemplate !== DEFAULT_EMAIL_SUBJECT_TEMPLATE && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setForm({ ...form, emailSubjectTemplate: DEFAULT_EMAIL_SUBJECT_TEMPLATE })
-                    }
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#2B7A3B] cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" aria-hidden="true" />
-                    <span>Reset Default</span>
-                  </button>
-                )}
-              </div>
-              <input
-                ref={subjectInputRef}
-                id="email-subject-tpl"
-                value={form.emailSubjectTemplate}
-                onFocus={() => setActiveTemplateField('subject')}
-                onChange={(e) => setForm({ ...form, emailSubjectTemplate: e.target.value })}
-                placeholder={DEFAULT_EMAIL_SUBJECT_TEMPLATE}
-                className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 text-sm font-mono text-[#0F2437] focus:outline-none focus:border-[#006837]"
-              />
-              <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-xs text-slate-600">
-                <span className="font-semibold text-slate-700">Subject Preview: </span>
-                <span className="text-[#0F2437]">
-                  {renderPreviewTemplate(
-                    form.emailSubjectTemplate.trim() || DEFAULT_EMAIL_SUBJECT_TEMPLATE,
-                    form.portalUrl,
-                    true
-                  )}
-                </span>
-              </div>
-            </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {TEMPLATE_PLACEHOLDERS.map((item) => (
+                      <button
+                        key={item.token}
+                        type="button"
+                        onClick={() => insertPlaceholder(item.token)}
+                        title={`Insert ${item.token} (${item.label})`}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-slate-200 bg-slate-50 hover:border-[#2B7A3B] hover:bg-emerald-50 text-xs transition-colors cursor-pointer"
+                      >
+                        <code className="font-mono font-semibold text-[#1E6B34]">{item.token}</code>
+                        <span className="text-[11px] text-slate-500">{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
 
-            {/* WhatsApp Message Body Template */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <label
-                    htmlFor="whatsapp-body-tpl"
-                    className="block text-xs font-semibold text-slate-800"
-                  >
-                    WhatsApp Message Body Template
-                  </label>
-                  {form.whatsappMessageTemplate !== DEFAULT_WHATSAPP_MESSAGE_TEMPLATE && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm({
-                          ...form,
-                          whatsappMessageTemplate: DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
-                        })
+                  {/* Email Subject Line Template */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label
+                        htmlFor="email-subject-tpl"
+                        className="block text-xs font-semibold text-slate-800"
+                      >
+                        Email Subject Line Template
+                      </label>
+                      {form.emailSubjectTemplate !== DEFAULT_EMAIL_SUBJECT_TEMPLATE && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              emailSubjectTemplate: DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#2B7A3B] cursor-pointer"
+                        >
+                          <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                          <span>Reset Default</span>
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      ref={subjectInputRef}
+                      id="email-subject-tpl"
+                      value={form.emailSubjectTemplate}
+                      onFocus={() => setActiveTemplateField('subject')}
+                      onChange={(e) =>
+                        setForm({ ...form, emailSubjectTemplate: e.target.value })
                       }
-                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#2B7A3B] cursor-pointer"
-                    >
-                      <RotateCcw className="w-3 h-3" aria-hidden="true" />
-                      <span>Reset Default</span>
-                    </button>
-                  )}
-                </div>
-                <textarea
-                  ref={whatsappTextareaRef}
-                  id="whatsapp-body-tpl"
-                  rows={8}
-                  value={form.whatsappMessageTemplate}
-                  onFocus={() => setActiveTemplateField('whatsapp')}
-                  onChange={(e) => setForm({ ...form, whatsappMessageTemplate: e.target.value })}
-                  placeholder={DEFAULT_WHATSAPP_MESSAGE_TEMPLATE}
-                  className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 text-xs font-mono leading-relaxed text-[#0F2437] focus:outline-none focus:border-[#006837]"
-                />
-              </div>
+                      placeholder={DEFAULT_EMAIL_SUBJECT_TEMPLATE}
+                      className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 text-sm font-mono text-[#0F2437] focus:outline-none focus:border-[#006837]"
+                    />
+                    <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-xs text-slate-600">
+                      <span className="font-semibold text-slate-700">Subject Preview: </span>
+                      <span className="text-[#0F2437]">
+                        {renderPreviewTemplate(
+                          form.emailSubjectTemplate.trim() || DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+                          form.portalUrl,
+                          true
+                        )}
+                      </span>
+                    </div>
+                  </div>
 
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-800">
-                  WhatsApp Caption Preview (Sample Member)
+                  {/* WhatsApp Message Body Template */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label
+                          htmlFor="whatsapp-body-tpl"
+                          className="block text-xs font-semibold text-slate-800"
+                        >
+                          WhatsApp Message Body Template
+                        </label>
+                        {form.whatsappMessageTemplate !== DEFAULT_WHATSAPP_MESSAGE_TEMPLATE && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setForm({
+                                ...form,
+                                whatsappMessageTemplate: DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#2B7A3B] cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                            <span>Reset Default</span>
+                          </button>
+                        )}
+                      </div>
+                      <textarea
+                        ref={whatsappTextareaRef}
+                        id="whatsapp-body-tpl"
+                        rows={8}
+                        value={form.whatsappMessageTemplate}
+                        onFocus={() => setActiveTemplateField('whatsapp')}
+                        onChange={(e) =>
+                          setForm({ ...form, whatsappMessageTemplate: e.target.value })
+                        }
+                        placeholder={DEFAULT_WHATSAPP_MESSAGE_TEMPLATE}
+                        className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 text-xs font-mono leading-relaxed text-[#0F2437] focus:outline-none focus:border-[#006837]"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-800">
+                        WhatsApp Caption Preview (Sample Member)
+                      </div>
+                      <pre className="p-3.5 rounded-md border border-emerald-200 bg-emerald-50/40 text-xs font-sans text-[#0F2437] whitespace-pre-wrap leading-relaxed min-h-[196px]">
+                        {renderPreviewTemplate(
+                          form.whatsappMessageTemplate.trim() || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+                          form.portalUrl,
+                          false
+                        )}
+                      </pre>
+                    </div>
+                  </div>
                 </div>
-                <pre className="p-3.5 rounded-md border border-emerald-200 bg-emerald-50/40 text-xs font-sans text-[#0F2437] whitespace-pre-wrap leading-relaxed min-h-[196px]">
-                  {renderPreviewTemplate(
-                    form.whatsappMessageTemplate.trim() || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
-                    form.portalUrl,
-                    false
-                  )}
-                </pre>
-              </div>
-            </div>
-          </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
 
         <div className="flex justify-end">
@@ -1081,7 +1232,9 @@ export function SettingsView({
                 You have modified system configuration settings that have not been saved to SQLite yet. Save your changes before{' '}
                 {activePendingAction.type === 'tab'
                   ? `navigating to ${activePendingAction.targetTab === 'dispatch' ? 'Self Service' : 'Audit Logs'}`
-                  : 'refreshing settings'}
+                  : activePendingAction.type === 'lock_settings'
+                    ? 'locking System Settings'
+                    : 'refreshing settings'}
                 , or discard them to continue?
               </div>
 

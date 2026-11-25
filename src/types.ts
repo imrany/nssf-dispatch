@@ -94,3 +94,10 @@ export interface AuditLog {
   status: string;
   details: string;
 }
+
+export interface AdminAuthStatus {
+  adminExists: boolean;
+  authenticated: boolean;
+  username: string | null;
+  envPasscodeConfigured: boolean;
+}

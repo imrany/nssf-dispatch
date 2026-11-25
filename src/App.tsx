@@ -4,8 +4,9 @@ import { AuditLogsView } from './components/AuditLogsView';
 import { DispatchSuccess } from './components/DispatchSuccess';
 import { DispatchWorkspace } from './components/DispatchWorkspace';
 import { Header } from './components/Header';
+import { SettingsAuthGate } from './components/SettingsAuthGate';
 import { SettingsView, type PendingSettingsAction } from './components/SettingsView';
-import { Toaster } from './components/Toaster';
+import { Toaster, toast } from './components/Toaster';
 import type { ActiveTab, AppSettings, DispatchReceipt } from './types';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -48,17 +49,21 @@ export default function App() {
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [pendingSettingsAction, setPendingSettingsAction] =
     useState<PendingSettingsAction | null>(null);
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminUsername, setAdminUsername] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/settings')
+    fetch('/api/settings', {
+      headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+    })
       .then((res) => res.json())
       .then((data) => {
-        if (data && typeof data.smtpHost === 'string') {
-          setSettings(data);
+        if (data && typeof data.emailEnabled === 'boolean') {
+          setSettings((prev) => ({ ...prev, ...data }));
         }
       })
       .catch(() => {});
-  }, []);
+  }, [adminToken]);
 
   const navigateDirectToTab = (tab: ActiveTab) => {
     setActiveTab(tab);
@@ -68,14 +73,42 @@ export default function App() {
   };
 
   const handleTabChange = (tab: ActiveTab) => {
-    if (activeTab === 'settings' && tab !== 'settings' && settingsDirty) {
+    if (activeTab === 'settings' && tab !== 'settings' && adminToken && settingsDirty) {
       setPendingSettingsAction({ type: 'tab', targetTab: tab });
       return;
     }
     navigateDirectToTab(tab);
   };
 
-  const viewKey = activeTab === 'dispatch' ? (receipt ? 'dispatch-success' : 'dispatch-form') : activeTab;
+  const handleAdminLogout = (reason: 'manual' | 'expired' = 'manual') => {
+    const tokenToRevoke = adminToken;
+    setAdminToken(null);
+    setAdminUsername(null);
+    setSettingsDirty(false);
+    setPendingSettingsAction(null);
+    if (tokenToRevoke) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tokenToRevoke}` },
+      }).catch(() => {});
+    }
+    if (reason === 'expired') {
+      toast.warning('Session expired', 'Please sign in again to access System Settings.');
+    } else {
+      toast.success('Settings locked', 'Administrator session ended.');
+    }
+  };
+
+  const viewKey =
+    activeTab === 'dispatch'
+      ? receipt
+        ? 'dispatch-success'
+        : 'dispatch-form'
+      : activeTab === 'settings'
+        ? adminToken
+          ? 'settings-unlocked'
+          : 'settings-auth'
+        : activeTab;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -114,14 +147,28 @@ export default function App() {
                 <AuditLogsView onGoToDispatch={() => setActiveTab('dispatch')} />
               )}
 
-              {activeTab === 'settings' && (
+              {activeTab === 'settings' && !adminToken && (
+                <SettingsAuthGate
+                  onAuthenticated={(token, username, fullSettings) => {
+                    setAdminToken(token);
+                    setAdminUsername(username);
+                    setSettings(fullSettings);
+                  }}
+                />
+              )}
+
+              {activeTab === 'settings' && adminToken && (
                 <SettingsView
                   settings={settings}
+                  adminToken={adminToken}
+                  adminUsername={adminUsername || 'admin'}
                   onSettingsUpdated={(updated) => setSettings(updated)}
                   pendingNavigation={pendingSettingsAction}
                   onClearPendingNavigation={() => setPendingSettingsAction(null)}
                   onDirtyChange={setSettingsDirty}
                   onProceedToTab={navigateDirectToTab}
+                  onLogout={() => handleAdminLogout('manual')}
+                  onAuthExpired={() => handleAdminLogout('expired')}
                 />
               )}
             </motion.div>

@@ -4,12 +4,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import {
+  clearFailedLogins,
+  checkLoginRateLimit,
+  createAdminSessionToken,
+  extractBearerToken,
+  recordFailedLogin,
+  requireAdminAuth,
+  revokeAdminSessionToken,
+  verifyAdminSessionToken,
+  verifyTimingSafeString,
+} from './server/auth.ts';
+import {
+  createInitialAdmin,
   getAuditLogs,
   getPublicSettings,
   getRawSettings,
+  getSafeWorkspaceSettings,
+  hasAdminAccount,
   initDb,
   insertAuditLog,
   saveSettings,
+  verifyStoredAdminCredentials,
 } from './server/db.ts';
 import { buildOfficialNssfMessage, sendEmailStatement, testSmtpConnection } from './server/mailer.ts';
 import { encryptPdfWithPassword, extractAndValidatePdf } from './server/pdfEngine.ts';
@@ -396,17 +411,146 @@ async function startServer() {
     res.send(entry.pdf);
   });
 
-  // 4. Settings Endpoints (SQLite backed)
-  app.get('/api/settings', (_req, res) => {
-    res.json(getPublicSettings());
+  // 4. Settings Admin Auth Endpoints (SQLite scrypt + Signed Bearer Tokens)
+  app.get('/api/auth/status', (req, res) => {
+    const envPasscode = (process.env.NSSF_ADMIN_PASSCODE || '').trim();
+    const envPasscodeConfigured = envPasscode.length > 0;
+    const adminExists = envPasscodeConfigured || hasAdminAccount();
+    const token = extractBearerToken(req);
+    const verified = verifyAdminSessionToken(token);
+    res.json({
+      adminExists,
+      authenticated: verified.valid,
+      username: verified.username,
+      envPasscodeConfigured,
+    });
   });
 
-  app.post('/api/settings', (req, res) => {
+  app.post('/api/auth/setup', (req, res) => {
+    const envPasscode = (process.env.NSSF_ADMIN_PASSCODE || '').trim();
+    if (envPasscode.length > 0 || hasAdminAccount()) {
+      res.status(409).json({
+        ok: false,
+        error: 'An administrator account is already configured. Please sign in.',
+      });
+      return;
+    }
+
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+
+    if (!/^[A-Za-z0-9._@-]{3,64}$/.test(username)) {
+      res.status(400).json({
+        ok: false,
+        error: 'Admin username must be 3 to 64 characters (letters, numbers, ., _, @, -).',
+      });
+      return;
+    }
+
+    if (password.length < 8 || password.length > 128) {
+      res.status(400).json({
+        ok: false,
+        error: 'Admin password must be between 8 and 128 characters.',
+      });
+      return;
+    }
+
+    try {
+      const created = createInitialAdmin(username, password);
+      const token = createAdminSessionToken(created.username);
+      res.status(201).json({
+        ok: true,
+        token,
+        username: created.username,
+        settings: getPublicSettings(),
+      });
+    } catch {
+      res.status(409).json({
+        ok: false,
+        error: 'Administrator setup already completed. Please sign in.',
+      });
+    }
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const rate = checkLoginRateLimit(clientIp);
+    if (!rate.allowed) {
+      res.status(429).json({
+        ok: false,
+        error: `Too many failed login attempts. Try again in ${rate.retryAfterSec} seconds.`,
+      });
+      return;
+    }
+
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    const envPasscode = (process.env.NSSF_ADMIN_PASSCODE || '').trim();
+
+    if (envPasscode.length > 0) {
+      if (!password || !verifyTimingSafeString(password, envPasscode)) {
+        recordFailedLogin(clientIp);
+        res.status(401).json({ ok: false, error: 'Invalid administrator credentials.' });
+        return;
+      }
+      clearFailedLogins(clientIp);
+      const effectiveUser = username || 'admin';
+      const token = createAdminSessionToken(effectiveUser);
+      res.json({
+        ok: true,
+        token,
+        username: effectiveUser,
+        settings: getPublicSettings(),
+      });
+      return;
+    }
+
+    if (!hasAdminAccount()) {
+      res.status(400).json({
+        ok: false,
+        error: 'No administrator account exists yet. Complete initial admin setup first.',
+      });
+      return;
+    }
+
+    const verified = verifyStoredAdminCredentials(username, password);
+    if (!verified.ok || !verified.username) {
+      recordFailedLogin(clientIp);
+      res.status(401).json({ ok: false, error: 'Invalid username or password.' });
+      return;
+    }
+
+    clearFailedLogins(clientIp);
+    const token = createAdminSessionToken(verified.username);
+    res.json({
+      ok: true,
+      token,
+      username: verified.username,
+      settings: getPublicSettings(),
+    });
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    revokeAdminSessionToken(extractBearerToken(req));
+    res.json({ ok: true });
+  });
+
+  // 5. Settings Endpoints (SQLite backed; sensitive fields & mutations require admin auth)
+  app.get('/api/settings', (req, res) => {
+    const verified = verifyAdminSessionToken(extractBearerToken(req));
+    if (verified.valid) {
+      res.json(getPublicSettings());
+      return;
+    }
+    res.json(getSafeWorkspaceSettings());
+  });
+
+  app.post('/api/settings', requireAdminAuth, (req, res) => {
     saveSettings(req.body || {});
     res.json({ ok: true, settings: getPublicSettings() });
   });
 
-  app.post('/api/settings/test-smtp', async (req, res) => {
+  app.post('/api/settings/test-smtp', requireAdminAuth, async (req, res) => {
     const current = getRawSettings();
     const override = req.body || {};
     const testCfg = {
@@ -433,21 +577,21 @@ async function startServer() {
     }
   });
 
-  // 5. WhatsApp QR & Pairing Endpoints (SQLite backed)
-  app.get('/api/whatsapp/qr', async (req, res) => {
+  // 6. WhatsApp QR & Pairing Endpoints (SQLite backed, protected by admin auth)
+  app.get('/api/whatsapp/qr', requireAdminAuth, async (req, res) => {
     const cfg = getRawSettings();
     const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
     const qrData = await fetchWhatsAppQr(cfg, forceRefresh);
     res.json({ ...qrData, settings: getPublicSettings() });
   });
 
-  app.get('/api/whatsapp/status', async (_req, res) => {
+  app.get('/api/whatsapp/status', requireAdminAuth, async (_req, res) => {
     const cfg = getRawSettings();
     const qrData = await fetchWhatsAppQr(cfg, false);
     res.json({ ...qrData, settings: getPublicSettings() });
   });
 
-  app.post('/api/whatsapp/pair-confirm', (req, res) => {
+  app.post('/api/whatsapp/pair-confirm', requireAdminAuth, (req, res) => {
     const cfg = getRawSettings();
     const sessionCode = String(req.body?.sessionCode || '').trim();
     const pairedPhone = String(req.body?.phone || req.body?.pairedPhone || '').trim();
@@ -459,13 +603,13 @@ async function startServer() {
     res.json({ ok: true, qrData: updated, settings: getPublicSettings() });
   });
 
-  app.post('/api/whatsapp/unlink', async (_req, res) => {
+  app.post('/api/whatsapp/unlink', requireAdminAuth, async (_req, res) => {
     const cfg = getRawSettings();
     const qrData = await unlinkWhatsAppSession(cfg);
     res.json({ ok: true, qrData, settings: getPublicSettings() });
   });
 
-  // 6. Audit Logs Endpoint
+  // 7. Audit Logs Endpoint
   app.get('/api/audit', (_req, res) => {
     res.json(getAuditLogs(150));
   });

@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
+import { hashPasswordWithSalt, verifyPasswordHash } from './auth.ts';
 
 export interface AppSettings {
   smtpHost: string;
@@ -86,6 +87,13 @@ export function initDb(): void {
       paired_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      username TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
     CREATE TABLE IF NOT EXISTS audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -162,6 +170,31 @@ export function getPublicSettings(): Omit<AppSettings, 'smtpPass'> & { hasSmtpPa
   return {
     ...rest,
     hasSmtpPass: smtpPass.length > 0,
+  };
+}
+
+// Safe non-sensitive settings subset returned to unauthenticated DispatchWorkspace callers
+export function getSafeWorkspaceSettings(): Omit<AppSettings, 'smtpPass'> & { hasSmtpPass: boolean } {
+  const raw = getRawSettings();
+  return {
+    smtpHost: '',
+    smtpPort: '587',
+    smtpSecurity: 'starttls',
+    smtpUser: '',
+    hasSmtpPass: false,
+    smtpFrom: '',
+    emailEnabled: raw.emailEnabled,
+    whatsappEnabled: raw.whatsappEnabled,
+    deliveryMode: raw.deliveryMode,
+    whatsappBridgeUrl: '',
+    whatsappPaired: raw.whatsappPaired,
+    whatsappDeviceName: '',
+    filenameTemplate: raw.filenameTemplate,
+    passwordMode: raw.passwordMode,
+    portalUrl: raw.portalUrl,
+    previewBeforeDispatch: raw.previewBeforeDispatch,
+    emailSubjectTemplate: '',
+    whatsappMessageTemplate: '',
   };
 }
 
@@ -314,4 +347,44 @@ export function getAuditLogs(limit = 100): AuditLog[] {
        FROM audit_logs ORDER BY id DESC LIMIT ?`
     )
     .all(limit) as unknown as AuditLog[];
+}
+
+export function getAdminAccount(): { username: string; passwordHash: string; passwordSalt: string; createdAt: string } | null {
+  const row = db
+    .prepare(
+      `SELECT username, password_hash AS passwordHash, password_salt AS passwordSalt, created_at AS createdAt
+       FROM admin_users WHERE id = 1`
+    )
+    .get() as { username: string; passwordHash: string; passwordSalt: string; createdAt: string } | undefined;
+  return row ?? null;
+}
+
+export function hasAdminAccount(): boolean {
+  return getAdminAccount() !== null;
+}
+
+export function createInitialAdmin(username: string, password: string): { username: string; createdAt: string } {
+  const cleanUser = username.trim();
+  const { hash, salt } = hashPasswordWithSalt(password);
+  // CHECK (id = 1) primary key ensures atomic one-time admin bootstrap
+  db.prepare(
+    `INSERT INTO admin_users (id, username, password_hash, password_salt)
+     VALUES (1, ?, ?, ?)`
+  ).run(cleanUser, hash, salt);
+
+  const saved = getAdminAccount();
+  return {
+    username: saved?.username || cleanUser,
+    createdAt: saved?.createdAt || '',
+  };
+}
+
+export function verifyStoredAdminCredentials(username: string, password: string): { ok: boolean; username: string | null } {
+  const account = getAdminAccount();
+  if (!account) return { ok: false, username: null };
+  if (account.username.trim().toLowerCase() !== username.trim().toLowerCase()) {
+    return { ok: false, username: null };
+  }
+  const valid = verifyPasswordHash(password, account.passwordHash, account.passwordSalt);
+  return { ok: valid, username: valid ? account.username : null };
 }
