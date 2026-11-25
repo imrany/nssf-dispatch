@@ -488,6 +488,7 @@ func main() {
 			"bridgeUrl":       qrData.BridgeURL,
 			"pairedPhone":     qrData.PairedPhone,
 			"pairedAt":        qrData.PairedAt,
+			"error":           qrData.Error,
 			"settings":        pub,
 		})
 	}))
@@ -505,6 +506,7 @@ func main() {
 			"bridgeUrl":       qrData.BridgeURL,
 			"pairedPhone":     qrData.PairedPhone,
 			"pairedAt":        qrData.PairedAt,
+			"error":           qrData.Error,
 			"settings":        pub,
 		})
 	}))

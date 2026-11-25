@@ -31,6 +31,7 @@ import { encryptPdfWithPassword, extractAndValidatePdf } from './server/pdfEngin
 import {
   confirmWhatsAppPairingInDb,
   fetchWhatsAppQr,
+  resumePairedWhatsAppIfPresent,
   sendWhatsAppStatement,
   unlinkWhatsAppSession,
 } from './server/whatsapp.ts';
@@ -186,6 +187,7 @@ async function probeGoService(rawUrl: string): Promise<{ reachable: boolean; det
 
 async function startServer() {
   initDb();
+  resumePairedWhatsAppIfPresent(getRawSettings());
 
   const app = express();
   app.use(express.json({ limit: '2mb' }));

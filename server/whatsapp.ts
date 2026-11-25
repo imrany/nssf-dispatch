@@ -1,4 +1,16 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import QRCode from 'qrcode';
+import pino from 'pino';
+import {
+  Browsers,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeWASocket,
+  useMultiFileAuthState,
+  type WASocket,
+} from '@whiskeysockets/baileys';
 import {
   getWhatsAppSession,
   saveWhatsAppSession,
@@ -6,203 +18,6 @@ import {
 } from './db.ts';
 import type { StatementMeta } from './pdfEngine.ts';
 import { buildOfficialNssfMessage } from './mailer.ts';
-
-// Pure TypeScript ISO 18004 Byte-Mode QR Code Generator (Version 3: 29x29, ECC Level L)
-// Zero third-party dependencies. Generates a genuinely scannable QR SVG matrix.
-const QR_SIZE = 29;
-const DATA_CODEWORDS = 55;
-const ECC_CODEWORDS = 15;
-
-const GF_EXP = new Uint8Array(512);
-const GF_LOG = new Uint8Array(256);
-(() => {
-  let x = 1;
-  for (let i = 0; i < 255; i++) {
-    GF_EXP[i] = x;
-    GF_LOG[x] = i;
-    x <<= 1;
-    if (x & 0x100) x ^= 0x11d;
-  }
-  for (let i = 255; i < 512; i++) {
-    GF_EXP[i] = GF_EXP[i - 255];
-  }
-})();
-
-function gfMul(a: number, b: number): number {
-  if (a === 0 || b === 0) return 0;
-  return GF_EXP[GF_LOG[a] + GF_LOG[b]];
-}
-
-function rsGeneratorPoly(degree: number): Uint8Array {
-  let poly = new Uint8Array([1]);
-  for (let i = 0; i < degree; i++) {
-    const next = new Uint8Array(poly.length + 1);
-    const factor = GF_EXP[i];
-    for (let j = 0; j < poly.length; j++) {
-      next[j] ^= poly[j];
-      next[j + 1] ^= gfMul(poly[j], factor);
-    }
-    poly = next;
-  }
-  return poly;
-}
-
-function rsEncode(data: Uint8Array, eccCount: number): Uint8Array {
-  const gen = rsGeneratorPoly(eccCount);
-  const res = new Uint8Array(data.length + eccCount);
-  res.set(data);
-  for (let i = 0; i < data.length; i++) {
-    const coef = res[i];
-    if (coef !== 0) {
-      for (let j = 0; j < gen.length; j++) {
-        res[i + j] ^= gfMul(gen[j], coef);
-      }
-    }
-  }
-  return res.slice(data.length);
-}
-
-function encodeQrMatrix(text: string): number[][] {
-  const bytes = Buffer.from(text, 'utf8').subarray(0, DATA_CODEWORDS - 2);
-  const bits: number[] = [];
-  const pushBits = (val: number, count: number) => {
-    for (let i = count - 1; i >= 0; i--) bits.push((val >> i) & 1);
-  };
-
-  // Mode: Byte (0100), Length (8 bits for V1-9)
-  pushBits(0b0100, 4);
-  pushBits(bytes.length, 8);
-  for (const b of bytes) pushBits(b, 8);
-  pushBits(0, 4); // Terminator
-  while (bits.length % 8 !== 0) bits.push(0);
-
-  const data = new Uint8Array(DATA_CODEWORDS);
-  for (let i = 0; i < Math.floor(bits.length / 8); i++) {
-    let val = 0;
-    for (let b = 0; b < 8; b++) val = (val << 1) | bits[i * 8 + b];
-    data[i] = val;
-  }
-  const padBytes = [0xec, 0x11];
-  for (let i = Math.floor(bits.length / 8); i < DATA_CODEWORDS; i++) {
-    data[i] = padBytes[(i - Math.floor(bits.length / 8)) % 2];
-  }
-
-  const ecc = rsEncode(data, ECC_CODEWORDS);
-  const fullCodewords = new Uint8Array(DATA_CODEWORDS + ECC_CODEWORDS);
-  fullCodewords.set(data);
-  fullCodewords.set(ecc, DATA_CODEWORDS);
-
-  const grid: number[][] = Array.from({ length: QR_SIZE }, () => Array(QR_SIZE).fill(-1));
-  const reserved: boolean[][] = Array.from({ length: QR_SIZE }, () => Array(QR_SIZE).fill(false));
-
-  const setFixed = (r: number, c: number, val: number) => {
-    if (r >= 0 && r < QR_SIZE && c >= 0 && c < QR_SIZE) {
-      grid[r][c] = val;
-      reserved[r][c] = true;
-    }
-  };
-
-  const placeFinder = (top: number, left: number) => {
-    for (let r = -1; r <= 7; r++) {
-      for (let c = -1; c <= 7; c++) {
-        if (r === -1 || r === 7 || c === -1 || c === 7) {
-          setFixed(top + r, left + c, 0);
-        } else {
-          const dark = r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4);
-          setFixed(top + r, left + c, dark ? 1 : 0);
-        }
-      }
-    }
-  };
-
-  placeFinder(0, 0);
-  placeFinder(0, QR_SIZE - 7);
-  placeFinder(QR_SIZE - 7, 0);
-
-  // Version 3 alignment pattern at (22, 22)
-  for (let r = -2; r <= 2; r++) {
-    for (let c = -2; c <= 2; c++) {
-      const dark = Math.abs(r) === 2 || Math.abs(c) === 2 || (r === 0 && c === 0);
-      setFixed(22 + r, 22 + c, dark ? 1 : 0);
-    }
-  }
-
-  // Timing patterns
-  for (let i = 8; i < QR_SIZE - 8; i++) {
-    const val = i % 2 === 0 ? 1 : 0;
-    if (!reserved[6][i]) setFixed(6, i, val);
-    if (!reserved[i][6]) setFixed(i, 6, val);
-  }
-
-  // Dark module & reserve format info areas
-  setFixed(QR_SIZE - 8, 8, 1);
-  for (let i = 0; i < 9; i++) {
-    if (!reserved[8][i]) reserved[8][i] = true;
-    if (!reserved[i][8]) reserved[i][8] = true;
-  }
-  for (let i = 0; i < 8; i++) {
-    reserved[8][QR_SIZE - 1 - i] = true;
-    reserved[QR_SIZE - 1 - i][8] = true;
-  }
-
-  // Place data bits (zig-zag) with Mask 0 ((r + c) % 2 === 0)
-  const allBits: number[] = [];
-  for (const byte of fullCodewords) {
-    for (let b = 7; b >= 0; b--) allBits.push((byte >> b) & 1);
-  }
-  let bitIdx = 0;
-  let up = true;
-  for (let col = QR_SIZE - 1; col > 0; col -= 2) {
-    if (col === 6) col--;
-    for (let rowStep = 0; rowStep < QR_SIZE; rowStep++) {
-      const row = up ? QR_SIZE - 1 - rowStep : rowStep;
-      for (const c of [col, col - 1]) {
-        if (!reserved[row][c]) {
-          const bit = bitIdx < allBits.length ? allBits[bitIdx++] : 0;
-          const masked = (row + c) % 2 === 0 ? bit ^ 1 : bit;
-          grid[row][c] = masked;
-        }
-      }
-    }
-    up = !up;
-  }
-
-  // Format information for ECC L (01) + Mask 0 (000) -> 15-bit BCH + mask 0x5412 = 0x77C4 (111011111000100)
-  const fmtBits = 0x77c4;
-  for (let i = 0; i < 15; i++) {
-    const bit = (fmtBits >> i) & 1;
-    // Vertical
-    if (i < 6) grid[i][8] = bit;
-    else if (i < 8) grid[i + 1][8] = bit;
-    else grid[QR_SIZE - 15 + i][8] = bit;
-    // Horizontal
-    if (i < 8) grid[8][QR_SIZE - 1 - i] = bit;
-    else if (i < 9) grid[8][7] = bit;
-    else grid[8][14 - i] = bit;
-  }
-
-  return grid;
-}
-
-export function generateQrSvg(payload: string): string {
-  const matrix = encodeQrMatrix(payload);
-  const quiet = 2;
-  const total = QR_SIZE + quiet * 2;
-  const rects: string[] = [];
-
-  for (let r = 0; r < QR_SIZE; r++) {
-    for (let c = 0; c < QR_SIZE; c++) {
-      if (matrix[r][c] === 1) {
-        rects.push(`<rect x="${c + quiet}" y="${r + quiet}" width="1" height="1" fill="#052e16"/>`);
-      }
-    }
-  }
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="210" height="210" shape-rendering="crispEdges">
-    <rect width="${total}" height="${total}" fill="#ffffff"/>
-    ${rects.join('')}
-  </svg>`;
-}
 
 export interface WhatsAppQrResponse {
   paired: boolean;
@@ -213,6 +28,56 @@ export interface WhatsAppQrResponse {
   bridgeUrl: string;
   pairedPhone: string;
   pairedAt: string;
+  error?: string;
+}
+
+const AUTH_DIR = path.resolve(process.cwd(), 'whatsapp_auth');
+const silentLogger = pino({ level: 'silent' });
+
+let activeSocket: WASocket | null = null;
+let socketBootPromise: Promise<void> | null = null;
+let latestQrText = '';
+let latestQrSvg = '';
+let isSocketOpen = false;
+let lastConnectionError = '';
+let currentSessionCode = '';
+let cachedWaVersion: [number, number, number] | null = null;
+const qrOrOpenWaiters = new Set<() => void>();
+
+function notifyWaiters(): void {
+  for (const resolve of qrOrOpenWaiters) {
+    resolve();
+  }
+  qrOrOpenWaiters.clear();
+}
+
+function waitForQrOrOpen(timeoutMs = 9000): Promise<void> {
+  if (isSocketOpen || latestQrSvg || lastConnectionError) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      qrOrOpenWaiters.delete(done);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    qrOrOpenWaiters.add(done);
+  });
+}
+
+export async function generateQrSvg(payload: string): Promise<string> {
+  if (!payload) return '';
+  return QRCode.toString(payload, {
+    type: 'svg',
+    width: 210,
+    margin: 4,
+    errorCorrectionLevel: 'L',
+    color: {
+      dark: '#052e16',
+      light: '#ffffff',
+    },
+  });
 }
 
 function validateBridgeUrl(rawUrl: string): URL {
@@ -231,6 +96,228 @@ function nowFormatted(): string {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);
 }
 
+function extractPhoneFromJid(jid?: string | null): string {
+  if (!jid) return '';
+  return jid.split('@')[0]?.split(':')[0]?.replace(/[^\d+]/g, '') || '';
+}
+
+function hasSavedBaileysCreds(): boolean {
+  return fs.existsSync(path.join(AUTH_DIR, 'creds.json'));
+}
+
+function clearSavedBaileysCreds(): void {
+  fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+}
+
+function closeActiveSocket(): void {
+  if (activeSocket) {
+    try {
+      activeSocket.ev.removeAllListeners('connection.update');
+      activeSocket.ev.removeAllListeners('creds.update');
+      activeSocket.end(undefined);
+    } catch {
+      // Ignore socket close error
+    }
+    activeSocket = null;
+  }
+}
+
+async function getWaVersion(): Promise<[number, number, number]> {
+  if (cachedWaVersion) return cachedWaVersion;
+  try {
+    const res = await Promise.race([
+      fetchLatestBaileysVersion(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('WA version lookup timeout')), 3500)
+      ),
+    ]);
+    cachedWaVersion = res.version;
+    return cachedWaVersion;
+  } catch {
+    return [2, 3000, 1027934701];
+  }
+}
+
+function normalizeWhatsAppJid(phone: string): string {
+  let digits = phone.replace(/[^\d]/g, '');
+  if (!digits) {
+    throw new Error('Please enter a valid member WhatsApp phone number.');
+  }
+  if (digits.startsWith('0') && digits.length === 10) {
+    digits = `254${digits.slice(1)}`;
+  }
+  if (digits.length < 9) {
+    throw new Error('Please enter a valid member WhatsApp phone number (e.g. 254712345678).');
+  }
+  return `${digits}@s.whatsapp.net`;
+}
+
+async function startBaileysSession(cfg: AppSettings, resetAuth = false): Promise<void> {
+  if (socketBootPromise) {
+    await socketBootPromise;
+    if (!resetAuth) return;
+  }
+
+  socketBootPromise = (async () => {
+    try {
+      if (resetAuth) {
+        closeActiveSocket();
+        clearSavedBaileysCreds();
+        latestQrText = '';
+        latestQrSvg = '';
+        isSocketOpen = false;
+        currentSessionCode = createFreshSessionCode();
+      } else if (activeSocket && (isSocketOpen || latestQrSvg)) {
+        return;
+      }
+
+      lastConnectionError = '';
+      if (!currentSessionCode) {
+        const existing = getWhatsAppSession();
+        currentSessionCode = existing?.sessionCode || createFreshSessionCode();
+      }
+
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
+      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+      const version = await getWaVersion();
+
+      closeActiveSocket();
+      const sock = makeWASocket({
+        version,
+        auth: state,
+        logger: silentLogger,
+        browser: Browsers.ubuntu(cfg.whatsappDeviceName || 'NSSF Statement Dispatch'),
+        printQRInTerminal: false,
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        connectTimeoutMs: 15000,
+      });
+      activeSocket = sock;
+
+      sock.ev.on('creds.update', () => {
+        saveCreds().catch(() => undefined);
+      });
+
+      sock.ev.on('connection.update', async (update) => {
+        if (activeSocket !== sock) return;
+
+        if (update.qr) {
+          try {
+            const svg = await generateQrSvg(update.qr);
+            latestQrText = update.qr;
+            latestQrSvg = svg;
+            isSocketOpen = false;
+            lastConnectionError = '';
+            if (!currentSessionCode) {
+              currentSessionCode = createFreshSessionCode();
+            }
+            saveWhatsAppSession({
+              sessionCode: currentSessionCode,
+              qrPayload: update.qr,
+              qrSvg: svg,
+              paired: false,
+              deviceName: cfg.whatsappDeviceName,
+              bridgeUrl: cfg.whatsappBridgeUrl,
+              bridgeReachable: true,
+              pairedPhone: '',
+              pairedAt: '',
+            });
+          } catch (err) {
+            lastConnectionError =
+              err instanceof Error ? err.message : 'Failed to render WhatsApp QR SVG.';
+          } finally {
+            notifyWaiters();
+          }
+        }
+
+        if (update.connection === 'open') {
+          isSocketOpen = true;
+          latestQrText = '';
+          latestQrSvg = '';
+          lastConnectionError = '';
+          const linkedPhone = extractPhoneFromJid(sock.user?.id);
+          const existing = getWhatsAppSession();
+          const code = currentSessionCode || existing?.sessionCode || createFreshSessionCode();
+          currentSessionCode = code;
+
+          saveWhatsAppSession({
+            sessionCode: code,
+            qrPayload: '',
+            qrSvg: '',
+            paired: true,
+            deviceName: cfg.whatsappDeviceName,
+            bridgeUrl: cfg.whatsappBridgeUrl,
+            bridgeReachable: true,
+            pairedPhone: linkedPhone || existing?.pairedPhone || '',
+            pairedAt: existing?.pairedAt || nowFormatted(),
+          });
+          notifyWaiters();
+        }
+
+        if (update.connection === 'close') {
+          const statusCode = (
+            update.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
+          )?.output?.statusCode;
+          const errMessage =
+            update.lastDisconnect?.error instanceof Error
+              ? update.lastDisconnect.error.message
+              : 'WhatsApp Web connection closed.';
+
+          isSocketOpen = false;
+          activeSocket = null;
+
+          if (statusCode === DisconnectReason.restartRequired) {
+            // WhatsApp always requires an immediate reconnect right after QR pairing completes
+            void startBaileysSession(cfg, false);
+            return;
+          }
+
+          if (statusCode === DisconnectReason.loggedOut) {
+            clearSavedBaileysCreds();
+            latestQrText = '';
+            latestQrSvg = '';
+            lastConnectionError = 'WhatsApp device was logged out. Refresh QR to link again.';
+            currentSessionCode = createFreshSessionCode();
+            saveWhatsAppSession({
+              sessionCode: currentSessionCode,
+              qrPayload: '',
+              qrSvg: '',
+              paired: false,
+              deviceName: cfg.whatsappDeviceName,
+              bridgeUrl: cfg.whatsappBridgeUrl,
+              bridgeReachable: false,
+              pairedPhone: '',
+              pairedAt: '',
+            });
+            notifyWaiters();
+            return;
+          }
+
+          lastConnectionError = errMessage;
+          notifyWaiters();
+        }
+      });
+    } catch (err) {
+      lastConnectionError =
+        err instanceof Error ? err.message : 'Unable to connect to WhatsApp Web.';
+      activeSocket = null;
+      isSocketOpen = false;
+      notifyWaiters();
+    } finally {
+      socketBootPromise = null;
+    }
+  })();
+
+  await socketBootPromise;
+}
+
+export function resumePairedWhatsAppIfPresent(cfg: AppSettings): void {
+  const existing = getWhatsAppSession();
+  if (existing?.paired && hasSavedBaileysCreds() && !activeSocket) {
+    void startBaileysSession(cfg, false);
+  }
+}
+
 export async function fetchWhatsAppQr(
   cfg: AppSettings,
   forceRefresh = false
@@ -239,10 +326,11 @@ export async function fetchWhatsAppQr(
   const baseSessionCode =
     !forceRefresh && existing?.sessionCode ? existing.sessionCode : createFreshSessionCode();
 
+  // 1. Check if a custom external WhatsApp Gateway sidecar is running on cfg.whatsappBridgeUrl
   try {
     const bridgeUrl = validateBridgeUrl(cfg.whatsappBridgeUrl);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2000);
+    const timer = setTimeout(() => controller.abort(), 1500);
     const resp = await fetch(
       `${bridgeUrl.origin}/qr${forceRefresh ? '?refresh=1' : ''}`,
       { signal: controller.signal }
@@ -259,8 +347,8 @@ export async function fetchWhatsAppQr(
         pairedPhone?: string;
       };
       const sessionCode = data.sessionCode || baseSessionCode;
-      const qrPayload = data.qrText || `nssf://wa-link/${sessionCode}`;
-      const qrSvg = data.qrSvg || generateQrSvg(qrPayload);
+      const qrPayload = data.qrText || '';
+      const qrSvg = data.qrSvg || (qrPayload ? await generateQrSvg(qrPayload) : '');
       const isPaired = Boolean(data.paired);
       const pairedPhone = data.pairedPhone || data.phone || existing?.pairedPhone || '';
       const pairedAt = isPaired ? existing?.pairedAt || nowFormatted() : '';
@@ -289,55 +377,86 @@ export async function fetchWhatsAppQr(
       };
     }
   } catch {
-    // Bridge sidecar not running locally; read/persist SQLite QR session state
+    // External HTTP sidecar not running; use built-in Baileys WhatsApp Web Multi-Device client
   }
 
-  if (!forceRefresh && existing) {
-    const saved = saveWhatsAppSession({
-      sessionCode: existing.sessionCode,
-      qrPayload: existing.qrPayload,
-      qrSvg: existing.qrSvg,
-      paired: existing.paired,
+  // Clear any legacy placeholder QR rows stored from earlier versions
+  if (existing?.qrPayload?.startsWith('https://nssfdigital.enssf.co.ke/wa-pair')) {
+    saveWhatsAppSession({
+      sessionCode: baseSessionCode,
+      qrPayload: '',
+      qrSvg: '',
+      paired: false,
       deviceName: cfg.whatsappDeviceName,
       bridgeUrl: cfg.whatsappBridgeUrl,
       bridgeReachable: false,
+      pairedPhone: '',
+      pairedAt: '',
+    });
+  }
+
+  // If DB says paired and saved credentials exist, ensure socket stays connected
+  if (!forceRefresh && existing?.paired && hasSavedBaileysCreds()) {
+    if (!activeSocket && !isSocketOpen) {
+      void startBaileysSession(cfg, false);
+    }
+    return {
+      paired: true,
+      bridgeReachable: true,
+      sessionCode: existing.sessionCode,
+      qrSvg: '',
+      deviceName: cfg.whatsappDeviceName,
+      bridgeUrl: cfg.whatsappBridgeUrl,
       pairedPhone: existing.pairedPhone,
       pairedAt: existing.pairedAt,
-    });
-    return {
-      paired: saved.paired,
-      bridgeReachable: saved.bridgeReachable,
-      sessionCode: saved.sessionCode,
-      qrSvg: saved.qrSvg,
-      deviceName: saved.deviceName,
-      bridgeUrl: saved.bridgeUrl,
-      pairedPhone: saved.pairedPhone,
-      pairedAt: saved.pairedAt,
     };
   }
 
-  const qrPayload = `https://nssfdigital.enssf.co.ke/wa-pair?s=${baseSessionCode}`;
-  const saved = saveWhatsAppSession({
-    sessionCode: baseSessionCode,
-    qrPayload,
-    qrSvg: generateQrSvg(qrPayload),
-    paired: false,
-    deviceName: cfg.whatsappDeviceName,
-    bridgeUrl: cfg.whatsappBridgeUrl,
-    bridgeReachable: false,
-    pairedPhone: '',
-    pairedAt: '',
-  });
+  // Start or refresh built-in Baileys WhatsApp Web socket to get a real WhatsApp QR code
+  if (forceRefresh || !activeSocket || (!isSocketOpen && !latestQrSvg)) {
+    await startBaileysSession(cfg, forceRefresh || !hasSavedBaileysCreds());
+    await waitForQrOrOpen(9000);
+  }
+
+  const latestDb = getWhatsAppSession();
+  if (isSocketOpen || latestDb?.paired) {
+    return {
+      paired: true,
+      bridgeReachable: true,
+      sessionCode: latestDb?.sessionCode || currentSessionCode || baseSessionCode,
+      qrSvg: '',
+      deviceName: cfg.whatsappDeviceName,
+      bridgeUrl: cfg.whatsappBridgeUrl,
+      pairedPhone: latestDb?.pairedPhone || extractPhoneFromJid(activeSocket?.user?.id),
+      pairedAt: latestDb?.pairedAt || nowFormatted(),
+    };
+  }
+
+  if (latestQrSvg) {
+    return {
+      paired: false,
+      bridgeReachable: true,
+      sessionCode: currentSessionCode || latestDb?.sessionCode || baseSessionCode,
+      qrSvg: latestQrSvg,
+      deviceName: cfg.whatsappDeviceName,
+      bridgeUrl: cfg.whatsappBridgeUrl,
+      pairedPhone: '',
+      pairedAt: '',
+    };
+  }
 
   return {
-    paired: saved.paired,
-    bridgeReachable: saved.bridgeReachable,
-    sessionCode: saved.sessionCode,
-    qrSvg: saved.qrSvg,
-    deviceName: saved.deviceName,
-    bridgeUrl: saved.bridgeUrl,
-    pairedPhone: saved.pairedPhone,
-    pairedAt: saved.pairedAt,
+    paired: false,
+    bridgeReachable: false,
+    sessionCode: currentSessionCode || baseSessionCode,
+    qrSvg: '',
+    deviceName: cfg.whatsappDeviceName,
+    bridgeUrl: cfg.whatsappBridgeUrl,
+    pairedPhone: '',
+    pairedAt: '',
+    error:
+      lastConnectionError ||
+      'Unable to reach WhatsApp Web to obtain a pairing QR code. Check internet access or click Refresh QR.',
   };
 }
 
@@ -385,15 +504,28 @@ export async function unlinkWhatsAppSession(cfg: AppSettings): Promise<WhatsAppQ
     }).catch(() => undefined);
     clearTimeout(timer);
   } catch {
-    // Ignore unreachable bridge during local unlink
+    // Ignore unreachable external bridge during unlink
   }
 
-  const nextCode = createFreshSessionCode();
-  const nextPayload = `https://nssfdigital.enssf.co.ke/wa-pair?s=${nextCode}`;
-  const saved = saveWhatsAppSession({
-    sessionCode: nextCode,
-    qrPayload: nextPayload,
-    qrSvg: generateQrSvg(nextPayload),
+  if (activeSocket) {
+    try {
+      await activeSocket.logout();
+    } catch {
+      // Ignore logout failure if socket already disconnected
+    }
+  }
+  closeActiveSocket();
+  clearSavedBaileysCreds();
+  latestQrText = '';
+  latestQrSvg = '';
+  isSocketOpen = false;
+  lastConnectionError = '';
+  currentSessionCode = createFreshSessionCode();
+
+  saveWhatsAppSession({
+    sessionCode: currentSessionCode,
+    qrPayload: '',
+    qrSvg: '',
     paired: false,
     deviceName: cfg.whatsappDeviceName,
     bridgeUrl: cfg.whatsappBridgeUrl,
@@ -402,15 +534,19 @@ export async function unlinkWhatsAppSession(cfg: AppSettings): Promise<WhatsAppQ
     pairedAt: '',
   });
 
+  await startBaileysSession(cfg, true);
+  await waitForQrOrOpen(9000);
+
   return {
-    paired: saved.paired,
-    bridgeReachable: saved.bridgeReachable,
-    sessionCode: saved.sessionCode,
-    qrSvg: saved.qrSvg,
-    deviceName: saved.deviceName,
-    bridgeUrl: saved.bridgeUrl,
-    pairedPhone: saved.pairedPhone,
-    pairedAt: saved.pairedAt,
+    paired: false,
+    bridgeReachable: Boolean(latestQrSvg),
+    sessionCode: currentSessionCode,
+    qrSvg: latestQrSvg,
+    deviceName: cfg.whatsappDeviceName,
+    bridgeUrl: cfg.whatsappBridgeUrl,
+    pairedPhone: '',
+    pairedAt: '',
+    error: latestQrSvg ? undefined : lastConnectionError || undefined,
   };
 }
 
@@ -443,30 +579,56 @@ export async function sendWhatsAppStatement(
     }
   );
 
-  const bridgeUrl = validateBridgeUrl(cfg.whatsappBridgeUrl);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-
+  // 1. Try external HTTP Gateway if running
   try {
-    const resp = await fetch(`${bridgeUrl.origin}/send-document`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        phone: normalizedPhone,
-        filename: renamedFile,
-        caption: whatsappText,
-        documentBase64: encryptedPdf.toString('base64'),
-      }),
-    });
-    if (!resp.ok) {
+    const bridgeUrl = validateBridgeUrl(cfg.whatsappBridgeUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const resp = await fetch(`${bridgeUrl.origin}/send-document`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          phone: normalizedPhone,
+          filename: renamedFile,
+          caption: whatsappText,
+          documentBase64: encryptedPdf.toString('base64'),
+        }),
+      });
+      if (resp.ok) {
+        return;
+      }
       const bodyText = await resp.text().catch(() => '');
       throw new Error(`WhatsApp gateway returned HTTP ${resp.status}${bodyText ? `: ${bodyText}` : ''}`);
+    } finally {
+      clearTimeout(timer);
     }
   } catch (err) {
+    // If connection refused / unreachable, fall through to native Baileys session if paired
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`WhatsApp Gateway unreachable at ${bridgeUrl.origin}: ${msg}`);
-  } finally {
-    clearTimeout(timer);
+    if (msg.includes('WhatsApp gateway returned HTTP')) {
+      throw err;
+    }
   }
+
+  // 2. Send via native paired Baileys WhatsApp Web session
+  if (!isSocketOpen && hasSavedBaileysCreds()) {
+    await startBaileysSession(cfg, false);
+    await waitForQrOrOpen(10000);
+  }
+
+  if (!activeSocket || !isSocketOpen) {
+    throw new Error(
+      'WhatsApp device is not linked yet. Open System Settings -> WhatsApp QR Setup and scan the QR code with WhatsApp Linked Devices.'
+    );
+  }
+
+  const jid = normalizeWhatsAppJid(normalizedPhone);
+  await activeSocket.sendMessage(jid, {
+    document: encryptedPdf,
+    mimetype: 'application/pdf',
+    fileName: renamedFile,
+    caption: whatsappText,
+  });
 }

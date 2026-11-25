@@ -92,6 +92,7 @@ export interface WhatsAppQrData {
   bridgeUrl?: string;
   pairedPhone?: string;
   pairedAt?: string;
+  error?: string;
 }
 
 export interface AuditLog {

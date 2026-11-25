@@ -25,3 +25,174 @@
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+@keyframes dispatchFadeUp {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dispatchRowReveal {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes dispatchBadgePop {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes dispatchRingBurst {
+  0% {
+    opacity: 0.65;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2);
+  }
+}
+
+@keyframes dispatchCircleDraw {
+  0% {
+    stroke-dashoffset: 138;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes dispatchCheckDraw {
+  0% {
+    stroke-dashoffset: 40;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes dispatchSpark {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--spark-angle, 0deg)) translateY(0) scale(0.4);
+  }
+  28% {
+    opacity: 1;
+    transform: rotate(var(--spark-angle, 0deg)) translateY(-20px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--spark-angle, 0deg)) translateY(-30px) scale(0.35);
+  }
+}
+
+@keyframes dispatchSheen {
+  0% {
+    transform: translateX(-140%) skewX(-18deg);
+  }
+  100% {
+    transform: translateX(260%) skewX(-18deg);
+  }
+}
+
+.dispatch-animate-up {
+  opacity: 0;
+  animation: dispatchFadeUp 0.48s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: var(--delay, 0ms);
+}
+
+.dispatch-row-reveal {
+  opacity: 0;
+  animation: dispatchRowReveal 0.42s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: var(--delay, 0ms);
+}
+
+.dispatch-badge-pop {
+  animation: dispatchBadgePop 0.52s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.dispatch-ring-burst {
+  animation: dispatchRingBurst 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.12s both;
+}
+
+.dispatch-ring-burst-delayed {
+  animation: dispatchRingBurst 1.05s cubic-bezier(0.16, 1, 0.3, 1) 0.24s both;
+}
+
+.dispatch-circle-draw {
+  stroke-dasharray: 138;
+  stroke-dashoffset: 138;
+  animation: dispatchCircleDraw 0.48s cubic-bezier(0.65, 0, 0.35, 1) 0.08s forwards;
+}
+
+.dispatch-check-draw {
+  stroke-dasharray: 40;
+  stroke-dashoffset: 40;
+  animation: dispatchCheckDraw 0.36s cubic-bezier(0.65, 0, 0.35, 1) 0.34s forwards;
+}
+
+.dispatch-spark {
+  opacity: 0;
+  animation: dispatchSpark 0.85s cubic-bezier(0.16, 1, 0.3, 1) 0.32s forwards;
+}
+
+.dispatch-cta-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.dispatch-cta-sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  transform: translateX(-140%) skewX(-18deg);
+  animation: dispatchSheen 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.55s 1;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dispatch-animate-up,
+  .dispatch-row-reveal,
+  .dispatch-badge-pop,
+  .dispatch-ring-burst,
+  .dispatch-ring-burst-delayed,
+  .dispatch-circle-draw,
+  .dispatch-check-draw,
+  .dispatch-spark,
+  .dispatch-cta-sheen::after {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    stroke-dashoffset: 0 !important;
+  }
+  .dispatch-spark,
+  .dispatch-ring-burst,
+  .dispatch-ring-burst-delayed,
+  .dispatch-cta-sheen::after {
+    display: none !important;
+  }
+}
+

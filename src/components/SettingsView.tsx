@@ -856,16 +856,23 @@ export function SettingsView({
                 <div className="flex flex-col sm:flex-row items-center gap-4">
                   {/* Static QR Code box — untouched by any animations so scanners read cleanly */}
                   <div className="border border-slate-200 rounded-md p-2.5 bg-white shrink-0">
-                    {loadingQr || !qrDataUri ? (
-                      <div className="w-[170px] h-[170px] bg-slate-100 rounded flex items-center justify-center text-xs text-slate-500">
-                        Generating QR...
+                    {loadingQr ? (
+                      <div className="w-[170px] h-[170px] bg-slate-100 rounded flex items-center justify-center text-xs text-slate-500 text-center px-3">
+                        Connecting to WhatsApp Web...
                       </div>
-                    ) : (
+                    ) : qrDataUri ? (
                       <img
                         src={qrDataUri}
                         alt="WhatsApp Link Device QR Code"
                         className="w-[170px] h-[170px] block"
                       />
+                    ) : (
+                      <div className="w-[170px] h-[170px] bg-amber-50 border border-amber-200 rounded flex flex-col items-center justify-center text-center px-3 gap-2">
+                        <AlertCircle className="w-6 h-6 text-amber-600" aria-hidden="true" />
+                        <span className="text-[11px] font-medium text-amber-900 leading-snug">
+                          QR unavailable
+                        </span>
+                      </div>
                     )}
                   </div>
 
@@ -875,13 +882,19 @@ export function SettingsView({
                       <strong>Linked Devices</strong>, tap <strong>Link a Device</strong>, and scan this QR code. Pairing completes automatically once scanned.
                     </p>
 
+                    {qrData?.error && !qrDataUri && (
+                      <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
+                        {qrData.error}
+                      </div>
+                    )}
+
                     {qrData && (
                       <div className="space-y-1 font-mono text-[11px] text-slate-500">
                         <div>Session: {qrData.sessionCode}</div>
                         <div className="font-sans text-[11px] text-slate-500">
-                          {qrData.bridgeReachable
-                            ? 'Gateway reachable · Listening for scan'
-                            : 'QR session persisted · Listening via Gateway'}
+                          {qrData.bridgeReachable && qrDataUri
+                            ? 'Connected to WhatsApp Web · Scan with Linked Devices'
+                            : 'WhatsApp Web gateway not connected yet'}
                         </div>
                       </div>
                     )}
@@ -894,7 +907,7 @@ export function SettingsView({
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-300 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
                       >
                         <RefreshCw className="w-3 h-3" aria-hidden="true" />
-                        <span>Refresh QR</span>
+                        <span>{qrDataUri ? 'Refresh QR' : 'Retry Connection'}</span>
                       </button>
                     </div>
                   </div>

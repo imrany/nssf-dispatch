@@ -20,14 +20,62 @@ type WhatsAppQRResponse struct {
 	BridgeURL       string `json:"bridgeUrl"`
 	PairedPhone     string `json:"pairedPhone"`
 	PairedAt        string `json:"pairedAt"`
+	Error           string `json:"error,omitempty"`
 }
 
-// Pure Go ISO 18004 Byte-Mode QR Code Generator (Version 3: 29x29, ECC Level L)
-const (
-	qrSize          = 29
-	qrDataCodewords = 55
-	qrEccCodewords  = 15
-)
+// Pure Go ISO 18004 Byte-Mode QR Code Generator (ECC Level L, Versions 3 / 5 / 12)
+// Supports payloads up to 367 bytes (including full WhatsApp Web Multi-Device pairing tokens).
+type qrVersionSpec struct {
+	version      int
+	size         int
+	lenBits      int
+	eccPerBlock  int
+	group1Blocks int
+	group1Data   int
+	group2Blocks int
+	group2Data   int
+	alignCenters []int
+	versionBits  uint32
+}
+
+var qrVersionSpecs = []qrVersionSpec{
+	{
+		version:      3,
+		size:         29,
+		lenBits:      8,
+		eccPerBlock:  15,
+		group1Blocks: 1,
+		group1Data:   55,
+		group2Blocks: 0,
+		group2Data:   0,
+		alignCenters: []int{6, 22},
+		versionBits:  0,
+	},
+	{
+		version:      5,
+		size:         37,
+		lenBits:      8,
+		eccPerBlock:  26,
+		group1Blocks: 1,
+		group1Data:   108,
+		group2Blocks: 0,
+		group2Data:   0,
+		alignCenters: []int{6, 30},
+		versionBits:  0,
+	},
+	{
+		version:      12,
+		size:         65,
+		lenBits:      16,
+		eccPerBlock:  24,
+		group1Blocks: 2,
+		group1Data:   92,
+		group2Blocks: 2,
+		group2Data:   93,
+		alignCenters: []int{6, 32, 58},
+		versionBits:  0x0C762,
+	},
+}
 
 var (
 	gfExp [512]byte
@@ -85,11 +133,32 @@ func rsEncode(data []byte, eccCount int) []byte {
 	return res[len(data):]
 }
 
-func encodeQrMatrix(text string) [qrSize][qrSize]int {
-	raw := []byte(text)
-	if len(raw) > qrDataCodewords-2 {
-		raw = raw[:qrDataCodewords-2]
+func selectQRSpec(byteLen int) qrVersionSpec {
+	for _, spec := range qrVersionSpecs {
+		totalData := spec.group1Blocks*spec.group1Data + spec.group2Blocks*spec.group2Data
+		headerBytes := 2
+		if spec.lenBits == 16 {
+			headerBytes = 3
+		}
+		if byteLen <= totalData-headerBytes {
+			return spec
+		}
 	}
+	return qrVersionSpecs[len(qrVersionSpecs)-1]
+}
+
+func encodeQrMatrix(text string) ([][]int, int) {
+	raw := []byte(text)
+	spec := selectQRSpec(len(raw))
+	totalData := spec.group1Blocks*spec.group1Data + spec.group2Blocks*spec.group2Data
+	headerBytes := 2
+	if spec.lenBits == 16 {
+		headerBytes = 3
+	}
+	if len(raw) > totalData-headerBytes {
+		raw = raw[:totalData-headerBytes]
+	}
+
 	var bits []int
 	pushBits := func(val, count int) {
 		for i := count - 1; i >= 0; i-- {
@@ -97,18 +166,20 @@ func encodeQrMatrix(text string) [qrSize][qrSize]int {
 		}
 	}
 	pushBits(0b0100, 4)
-	pushBits(len(raw), 8)
+	pushBits(len(raw), spec.lenBits)
 	for _, b := range raw {
 		pushBits(int(b), 8)
 	}
-	pushBits(0, 4)
+	for i := 0; i < 4 && len(bits) < totalData*8; i++ {
+		bits = append(bits, 0)
+	}
 	for len(bits)%8 != 0 {
 		bits = append(bits, 0)
 	}
 
-	data := make([]byte, qrDataCodewords)
+	data := make([]byte, totalData)
 	nBytes := len(bits) / 8
-	for i := 0; i < nBytes; i++ {
+	for i := 0; i < nBytes && i < totalData; i++ {
 		val := 0
 		for b := 0; b < 8; b++ {
 			val = (val << 1) | bits[i*8+b]
@@ -116,22 +187,58 @@ func encodeQrMatrix(text string) [qrSize][qrSize]int {
 		data[i] = byte(val)
 	}
 	padBytes := []byte{0xec, 0x11}
-	for i := nBytes; i < qrDataCodewords; i++ {
+	for i := nBytes; i < totalData; i++ {
 		data[i] = padBytes[(i-nBytes)%2]
 	}
 
-	ecc := rsEncode(data, qrEccCodewords)
-	full := append(data, ecc...)
+	// Split into RS blocks & interleave per ISO 18004
+	var dataBlocks [][]byte
+	var eccBlocks [][]byte
+	offset := 0
+	for i := 0; i < spec.group1Blocks; i++ {
+		blk := data[offset : offset+spec.group1Data]
+		offset += spec.group1Data
+		dataBlocks = append(dataBlocks, blk)
+		eccBlocks = append(eccBlocks, rsEncode(blk, spec.eccPerBlock))
+	}
+	for i := 0; i < spec.group2Blocks; i++ {
+		blk := data[offset : offset+spec.group2Data]
+		offset += spec.group2Data
+		dataBlocks = append(dataBlocks, blk)
+		eccBlocks = append(eccBlocks, rsEncode(blk, spec.eccPerBlock))
+	}
 
-	var grid [qrSize][qrSize]int
-	var reserved [qrSize][qrSize]bool
-	for r := 0; r < qrSize; r++ {
-		for c := 0; c < qrSize; c++ {
+	maxDataLen := spec.group1Data
+	if spec.group2Data > maxDataLen {
+		maxDataLen = spec.group2Data
+	}
+	var full []byte
+	for i := 0; i < maxDataLen; i++ {
+		for _, blk := range dataBlocks {
+			if i < len(blk) {
+				full = append(full, blk[i])
+			}
+		}
+	}
+	for i := 0; i < spec.eccPerBlock; i++ {
+		for _, blk := range eccBlocks {
+			full = append(full, blk[i])
+		}
+	}
+
+	sz := spec.size
+	grid := make([][]int, sz)
+	reserved := make([][]bool, sz)
+	for r := 0; r < sz; r++ {
+		grid[r] = make([]int, sz)
+		reserved[r] = make([]bool, sz)
+		for c := 0; c < sz; c++ {
 			grid[r][c] = -1
 		}
 	}
+
 	setFixed := func(r, c, val int) {
-		if r >= 0 && r < qrSize && c >= 0 && c < qrSize {
+		if r >= 0 && r < sz && c >= 0 && c < sz {
 			grid[r][c] = val
 			reserved[r][c] = true
 		}
@@ -153,19 +260,31 @@ func encodeQrMatrix(text string) [qrSize][qrSize]int {
 		}
 	}
 	placeFinder(0, 0)
-	placeFinder(0, qrSize-7)
-	placeFinder(qrSize-7, 0)
+	placeFinder(0, sz-7)
+	placeFinder(sz-7, 0)
 
-	for r := -2; r <= 2; r++ {
-		for c := -2; c <= 2; c++ {
-			if r == 2 || r == -2 || c == 2 || c == -2 || (r == 0 && c == 0) {
-				setFixed(22+r, 22+c, 1)
-			} else {
-				setFixed(22+r, 22+c, 0)
+	// Alignment patterns
+	for _, rCenter := range spec.alignCenters {
+		for _, cCenter := range spec.alignCenters {
+			if (rCenter == 6 && cCenter == 6) ||
+				(rCenter == 6 && cCenter == sz-7) ||
+				(rCenter == sz-7 && cCenter == 6) {
+				continue
+			}
+			for r := -2; r <= 2; r++ {
+				for c := -2; c <= 2; c++ {
+					if r == 2 || r == -2 || c == 2 || c == -2 || (r == 0 && c == 0) {
+						setFixed(rCenter+r, cCenter+c, 1)
+					} else {
+						setFixed(rCenter+r, cCenter+c, 0)
+					}
+				}
 			}
 		}
 	}
-	for i := 8; i < qrSize-8; i++ {
+
+	// Timing patterns
+	for i := 8; i < sz-8; i++ {
 		val := 0
 		if i%2 == 0 {
 			val = 1
@@ -177,14 +296,31 @@ func encodeQrMatrix(text string) [qrSize][qrSize]int {
 			setFixed(i, 6, val)
 		}
 	}
-	setFixed(qrSize-8, 8, 1)
+
+	// Dark module + Format info reservation
+	setFixed(sz-8, 8, 1)
 	for i := 0; i < 9; i++ {
-		reserved[8][i] = true
-		reserved[i][8] = true
+		if !reserved[8][i] {
+			reserved[8][i] = true
+		}
+		if !reserved[i][8] {
+			reserved[i][8] = true
+		}
 	}
 	for i := 0; i < 8; i++ {
-		reserved[8][qrSize-1-i] = true
-		reserved[qrSize-1-i][8] = true
+		reserved[8][sz-1-i] = true
+		reserved[sz-1-i][8] = true
+	}
+
+	// Version information bits for Version >= 7
+	if spec.version >= 7 && spec.versionBits != 0 {
+		for i := 0; i < 18; i++ {
+			bit := int((spec.versionBits >> i) & 1)
+			r := i / 3
+			c := sz - 11 + (i % 3)
+			setFixed(r, c, bit)
+			setFixed(c, r, bit)
+		}
 	}
 
 	var allBits []int
@@ -195,14 +331,14 @@ func encodeQrMatrix(text string) [qrSize][qrSize]int {
 	}
 	bitIdx := 0
 	up := true
-	for col := qrSize - 1; col > 0; col -= 2 {
+	for col := sz - 1; col > 0; col -= 2 {
 		if col == 6 {
 			col--
 		}
-		for rowStep := 0; rowStep < qrSize; rowStep++ {
+		for rowStep := 0; rowStep < sz; rowStep++ {
 			row := rowStep
 			if up {
-				row = qrSize - 1 - rowStep
+				row = sz - 1 - rowStep
 			}
 			for _, c := range []int{col, col - 1} {
 				if !reserved[row][c] {
@@ -229,26 +365,29 @@ func encodeQrMatrix(text string) [qrSize][qrSize]int {
 		} else if i < 8 {
 			grid[i+1][8] = bit
 		} else {
-			grid[qrSize-15+i][8] = bit
+			grid[sz-15+i][8] = bit
 		}
 		if i < 8 {
-			grid[8][qrSize-1-i] = bit
+			grid[8][sz-1-i] = bit
 		} else if i < 9 {
 			grid[8][7] = bit
 		} else {
 			grid[8][14-i] = bit
 		}
 	}
-	return grid
+	return grid, sz
 }
 
 func GenerateQRSvg(payload string) string {
-	matrix := encodeQrMatrix(payload)
-	const quiet = 2
-	total := qrSize + quiet*2
+	if strings.TrimSpace(payload) == "" {
+		return ""
+	}
+	matrix, sz := encodeQrMatrix(payload)
+	const quiet = 4
+	total := sz + quiet*2
 	var rects strings.Builder
-	for r := 0; r < qrSize; r++ {
-		for c := 0; c < qrSize; c++ {
+	for r := 0; r < sz; r++ {
+		for c := 0; c < sz; c++ {
 			if matrix[r][c] == 1 {
 				fmt.Fprintf(&rects, `<rect x="%d" y="%d" width="1" height="1" fill="#052e16"/>`, c+quiet, r+quiet)
 			}
@@ -284,8 +423,11 @@ func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
 				}
 				if json.NewDecoder(resp.Body).Decode(&bridgeResp) == nil {
 					code := defaultStr(bridgeResp.SessionCode, baseCode)
-					payload := defaultStr(bridgeResp.QRText, "nssf://wa-link/"+code)
-					svg := defaultStr(bridgeResp.QRSvg, GenerateQRSvg(payload))
+					payload := strings.TrimSpace(bridgeResp.QRText)
+					svg := strings.TrimSpace(bridgeResp.QRSvg)
+					if svg == "" && payload != "" {
+						svg = GenerateQRSvg(payload)
+					}
 					phone := defaultStr(bridgeResp.PairedPhone, bridgeResp.Phone)
 					pairedAt := ""
 					if bridgeResp.Paired {
@@ -323,51 +465,30 @@ func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
 		}
 	}
 
-	if !forceRefresh && existing != nil {
-		saved, _ := SaveWhatsAppSession(WhatsAppSessionRecord{
+	if existing != nil && existing.Paired {
+		return WhatsAppQRResponse{
+			Paired:          true,
+			BridgeReachable: false,
 			SessionCode:     existing.SessionCode,
-			QRPayload:       existing.QRPayload,
-			QRSvg:           existing.QRSvg,
-			Paired:          existing.Paired,
+			QRSvg:           "",
 			DeviceName:      cfg.WhatsAppDeviceName,
 			BridgeURL:       cfg.WhatsAppBridgeURL,
-			BridgeReachable: false,
 			PairedPhone:     existing.PairedPhone,
 			PairedAt:        existing.PairedAt,
-		})
-		if saved != nil {
-			return WhatsAppQRResponse{
-				Paired:          saved.Paired,
-				BridgeReachable: false,
-				SessionCode:     saved.SessionCode,
-				QRSvg:           saved.QRSvg,
-				DeviceName:      saved.DeviceName,
-				BridgeURL:       saved.BridgeURL,
-				PairedPhone:     saved.PairedPhone,
-				PairedAt:        saved.PairedAt,
-			}
 		}
 	}
-
-	payload := "https://nssfdigital.enssf.co.ke/wa-pair?s=" + baseCode
-	svg := GenerateQRSvg(payload)
-	_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
-		SessionCode:     baseCode,
-		QRPayload:       payload,
-		QRSvg:           svg,
-		Paired:          false,
-		DeviceName:      cfg.WhatsAppDeviceName,
-		BridgeURL:       cfg.WhatsAppBridgeURL,
-		BridgeReachable: false,
-	})
 
 	return WhatsAppQRResponse{
 		Paired:          false,
 		BridgeReachable: false,
 		SessionCode:     baseCode,
-		QRSvg:           svg,
+		QRSvg:           "",
 		DeviceName:      cfg.WhatsAppDeviceName,
 		BridgeURL:       cfg.WhatsAppBridgeURL,
+		Error: fmt.Sprintf(
+			"No WhatsApp Web gateway reachable at %s. Run the Node.js server (built-in WhatsApp Web client) or start a WhatsApp gateway sidecar at that URL to generate a live pairing QR code.",
+			defaultStr(cfg.WhatsAppBridgeURL, "http://127.0.0.1:8095"),
+		),
 	}
 }
 
@@ -419,25 +540,16 @@ func UnlinkWhatsAppSession(cfg AppSettings) WhatsAppQRResponse {
 		_, _ = client.Post(strings.TrimRight(cfg.WhatsAppBridgeURL, "/")+"/logout", "application/json", nil)
 	}
 	nextCode := "NSSF-WA-" + strings.ToUpper(randomHex(6))
-	payload := "https://nssfdigital.enssf.co.ke/wa-pair?s=" + nextCode
-	svg := GenerateQRSvg(payload)
 	_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
 		SessionCode:     nextCode,
-		QRPayload:       payload,
-		QRSvg:           svg,
+		QRPayload:       "",
+		QRSvg:           "",
 		Paired:          false,
 		DeviceName:      cfg.WhatsAppDeviceName,
 		BridgeURL:       cfg.WhatsAppBridgeURL,
 		BridgeReachable: false,
 	})
-	return WhatsAppQRResponse{
-		Paired:          false,
-		BridgeReachable: false,
-		SessionCode:     nextCode,
-		QRSvg:           svg,
-		DeviceName:      cfg.WhatsAppDeviceName,
-		BridgeURL:       cfg.WhatsAppBridgeURL,
-	}
+	return FetchWhatsAppQR(cfg, true)
 }
 
 func SendWhatsAppStatement(cfg AppSettings, phone string, meta *StatementMeta, renamedFile string, encryptedPDF []byte, rawPassword string) error {
