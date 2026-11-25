@@ -1,36 +1,35 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  AlertCircle,
   CheckCircle2,
   Eye,
   FileText,
   Keyboard,
-  Pencil,
   RefreshCw,
   UploadCloud,
   X,
 } from 'lucide-react';
-import type { AppSettings, DispatchChannel, DispatchReceipt, StatementMeta } from '../types';
+import { useApp } from '../context/AppContext';
+import type { DispatchChannel, StatementMeta } from '../types';
+import { dispatchStatementApi, validateStatementApi } from '../utils/api';
+import { ROUTES, SMOOTH_EASE } from '../utils/constants';
+import {
+  MAX_PDF_BYTES,
+  formatFileSizeKb,
+  isPdfFile,
+  isValidEmail,
+  isValidWhatsappNumber,
+} from '../utils/validation';
 import { NssfLogo } from './NssfLogo';
 import { StatementPreviewModal } from './StatementPreviewModal';
 import { toast } from './Toaster';
-
-interface DispatchWorkspaceProps {
-  settings: AppSettings;
-  onSuccess: (receipt: DispatchReceipt) => void;
-  onOpenSettings: () => void;
-}
+import { ActionButton, AlertBanner, ChannelOptionCard, FormInput } from './ui';
 
 type WizardStep = 'select' | 'validate' | 'confirm';
 
-const SMOOTH_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
+export function DispatchWorkspace() {
+  const { settings, setReceipt, navigateTo } = useApp();
 
-export function DispatchWorkspace({
-  settings,
-  onSuccess,
-  onOpenSettings,
-}: DispatchWorkspaceProps) {
   const [step, setStep] = useState<WizardStep>('select');
   const [channel, setChannel] = useState<DispatchChannel>('email');
   const [hoveredCard, setHoveredCard] = useState<DispatchChannel | null>(null);
@@ -75,7 +74,6 @@ export function DispatchWorkspace({
     }
   }, [step, memberNo, file]);
 
-  // Prevent browser from navigating away if user drops slightly outside the dropzone
   useEffect(() => {
     if (step !== 'validate') return;
     const preventDefault = (e: DragEvent) => e.preventDefault();
@@ -123,14 +121,9 @@ export function DispatchWorkspace({
 
     setValidating(true);
     setDragOver(false);
-    const formData = new FormData();
-    formData.append('memberNo', memberNo.trim());
-    formData.append('statement', file);
-
     try {
-      const res = await fetch('/api/validate', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
+      const data = await validateStatementApi(memberNo, file);
+      if (!data.ok || !data.meta) {
         const msg = data.error || 'Statement validation failed.';
         setValidatedMeta(null);
         setErrorMsg(msg);
@@ -144,10 +137,14 @@ export function DispatchWorkspace({
         );
         setStep('confirm');
       }
-    } catch {
-      const msg = 'Unable to communicate with the NSSF validation service.';
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Unable to communicate with the NSSF validation service.';
+      setValidatedMeta(null);
       setErrorMsg(msg);
-      toast.error('Validation service error', msg);
+      toast.error('Statement validation failed', msg);
     } finally {
       setValidating(false);
     }
@@ -164,32 +161,27 @@ export function DispatchWorkspace({
     }
 
     setSubmitting(true);
-    const formData = new FormData();
-    formData.append('memberNo', memberNo.trim());
-    formData.append('channel', activeChannel);
-    formData.append('email', email.trim());
-    formData.append('whatsapp', whatsapp.trim());
-    formData.append('statement', file);
-
     try {
-      const res = await fetch('/api/dispatch', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        const msg = data.error || 'Dispatch failed.';
-        setErrorMsg(msg);
-        toast.error('Statement dispatch failed', msg);
-      } else {
-        setPreviewOpen(false);
-        toast.success(
-          data.deliveryMode === 'live' ? 'Statement dispatched' : 'Statement packaged (Preview)',
-          `${data.renamedFile} encrypted and logged to SQLite.`
-        );
-        onSuccess(data);
-      }
-    } catch {
-      const msg = 'Network error communicating with the NSSF Dispatch Server.';
+      const data = await dispatchStatementApi({
+        memberNo,
+        channel: activeChannel,
+        email,
+        whatsapp,
+        file,
+      });
+      setPreviewOpen(false);
+      toast.success(
+        data.deliveryMode === 'live' ? 'Statement dispatched' : 'Statement packaged (Preview)',
+        `${data.renamedFile} encrypted and logged to SQLite.`
+      );
+      setReceipt(data);
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Network error communicating with the NSSF Dispatch Server.';
       setErrorMsg(msg);
-      toast.error('Network error', msg);
+      toast.error('Statement dispatch failed', msg);
     } finally {
       setSubmitting(false);
     }
@@ -218,8 +210,8 @@ export function DispatchWorkspace({
     e.preventDefault();
     if (validating || submitting) return;
 
-    const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-    const isWhatsappValid = whatsapp.replace(/[^\d]/g, '').length >= 9;
+    const emailValid = isValidEmail(email);
+    const whatsappValid = isValidWhatsappNumber(whatsapp);
 
     if (key === 'e') {
       if (!settings.emailEnabled) {
@@ -228,14 +220,17 @@ export function DispatchWorkspace({
       }
       if (step === 'select') {
         handleSelectChannel('email');
-        toast.success('Email Statement selected', 'Shortcut Ctrl+E: enter Member Number and attach PDF.');
+        toast.success(
+          'Email Statement selected',
+          'Shortcut Ctrl+E: enter Member Number and attach PDF.'
+        );
       } else if (step === 'validate') {
         setChannel('email');
         if (!memberNo.trim()) focusFieldById('nssf-member-no');
         toast.success('Email channel active', 'Shortcut Ctrl+E: statement will be sent via Email.');
       } else if (step === 'confirm') {
         setChannel('email');
-        if (isEmailValid) {
+        if (emailValid) {
           void executeDispatch('email');
         } else {
           focusFieldById('member-email');
@@ -250,19 +245,28 @@ export function DispatchWorkspace({
 
     if (key === 'w') {
       if (!settings.whatsappEnabled) {
-        toast.warning('WhatsApp channel disabled', 'Enable WhatsApp in System Settings to use Ctrl+W.');
+        toast.warning(
+          'WhatsApp channel disabled',
+          'Enable WhatsApp in System Settings to use Ctrl+W.'
+        );
         return;
       }
       if (step === 'select') {
         handleSelectChannel('whatsapp');
-        toast.success('WhatsApp Statement selected', 'Shortcut Ctrl+W: enter Member Number and attach PDF.');
+        toast.success(
+          'WhatsApp Statement selected',
+          'Shortcut Ctrl+W: enter Member Number and attach PDF.'
+        );
       } else if (step === 'validate') {
         setChannel('whatsapp');
         if (!memberNo.trim()) focusFieldById('nssf-member-no');
-        toast.success('WhatsApp channel active', 'Shortcut Ctrl+W: statement will be sent via WhatsApp.');
+        toast.success(
+          'WhatsApp channel active',
+          'Shortcut Ctrl+W: statement will be sent via WhatsApp.'
+        );
       } else if (step === 'confirm') {
         setChannel('whatsapp');
-        if (isWhatsappValid) {
+        if (whatsappValid) {
           void executeDispatch('whatsapp');
         } else {
           focusFieldById('member-whatsapp');
@@ -285,17 +289,23 @@ export function DispatchWorkspace({
       }
       if (step === 'select') {
         handleSelectChannel('both');
-        toast.success('Dual dispatch selected', 'Shortcut Ctrl+B: enter Member Number and attach PDF.');
+        toast.success(
+          'Dual dispatch selected',
+          'Shortcut Ctrl+B: enter Member Number and attach PDF.'
+        );
       } else if (step === 'validate') {
         setChannel('both');
         if (!memberNo.trim()) focusFieldById('nssf-member-no');
-        toast.success('Email & WhatsApp active', 'Shortcut Ctrl+B: statement will be sent via both channels.');
+        toast.success(
+          'Email & WhatsApp active',
+          'Shortcut Ctrl+B: statement will be sent via both channels.'
+        );
       } else if (step === 'confirm') {
         setChannel('both');
-        if (isEmailValid && isWhatsappValid) {
+        if (emailValid && whatsappValid) {
           void executeDispatch('both');
         } else {
-          focusFieldById(!isEmailValid ? 'member-email' : 'member-whatsapp');
+          focusFieldById(!emailValid ? 'member-email' : 'member-whatsapp');
           toast.warning(
             'Complete recipient details',
             'Enter both Email and WhatsApp number, then press Ctrl+B again to send.'
@@ -307,16 +317,13 @@ export function DispatchWorkspace({
 
   const acceptSelectedFile = (candidate: File | null | undefined) => {
     if (validating || !candidate) return;
-    const isPdf =
-      candidate.type === 'application/pdf' ||
-      candidate.name.toLowerCase().endsWith('.pdf');
-    if (!isPdf) {
+    if (!isPdfFile(candidate)) {
       const msg = `"${candidate.name}" is not a PDF file. Please drop a valid NSSF statement PDF.`;
       setErrorMsg(msg);
       toast.warning('Unsupported file format', msg);
       return;
     }
-    if (candidate.size > 15 * 1024 * 1024) {
+    if (candidate.size > MAX_PDF_BYTES) {
       const msg = 'Statement PDF exceeds the 15 MB maximum upload size.';
       setErrorMsg(msg);
       toast.warning('File too large', msg);
@@ -366,17 +373,14 @@ export function DispatchWorkspace({
         ? 'VALIDATION'
         : 'DISPATCH STATEMENT';
 
-  const emailHovered = hoveredCard === 'email' && settings.emailEnabled;
-  const whatsappHovered = hoveredCard === 'whatsapp' && settings.whatsappEnabled;
   const bothHovered =
     hoveredCard === 'both' && settings.emailEnabled && settings.whatsappEnabled;
 
   return (
     <div className="py-4 sm:py-8 space-y-10">
-      {/* Brand + Display Heading block inspired by nssfdigital.enssf.co.ke */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <NssfLogo subtitle="NSSF DIGITAL STATEMENT DISPATCH" />
+          <NssfLogo />
           <AnimatePresence mode="wait" initial={false}>
             <motion.h1
               key={stepHeading}
@@ -393,14 +397,12 @@ export function DispatchWorkspace({
 
         <div className="text-xs text-slate-500 flex items-center gap-2">
           <span>
-            {settings.deliveryMode === 'live'
-              ? 'Live SMTP & WhatsApp'
-              : 'Preview Mode'}
+            {settings.deliveryMode === 'live' ? 'Live SMTP & WhatsApp' : 'Preview Mode'}
           </span>
           <span aria-hidden="true">·</span>
           <button
             type="button"
-            onClick={onOpenSettings}
+            onClick={() => navigateTo(ROUTES.SETTINGS)}
             className="font-semibold text-[#2B7A3B] hover:underline cursor-pointer"
           >
             Settings
@@ -409,52 +411,27 @@ export function DispatchWorkspace({
       </div>
 
       {noChannelsEnabled && (
-        <div className="border border-amber-300 bg-amber-50 rounded-md p-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 text-sm text-amber-900">
-            <AlertCircle className="w-5 h-5 text-amber-700 shrink-0" aria-hidden="true" />
-            <span>
-              All dispatch channels are currently disabled. Enable Email or WhatsApp in Settings to send statements.
-            </span>
-          </div>
-          <motion.button
-            type="button"
-            whileHover={{ y: -1 }}
-            whileTap={{ scale: 0.98 }}
-            transition={{ duration: 0.14, ease: SMOOTH_EASE }}
-            onClick={onOpenSettings}
-            className="px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-semibold hover:bg-[#236530] whitespace-nowrap cursor-pointer"
-          >
-            OPEN SETTINGS
-          </motion.button>
-        </div>
+        <AlertBanner
+          variant="warning"
+          message="All dispatch channels are currently disabled. Enable Email or WhatsApp in Settings to send statements."
+          actionLabel="OPEN SETTINGS"
+          onAction={() => navigateTo(ROUTES.SETTINGS)}
+        />
       )}
 
       {settings.deliveryMode === 'live' &&
         settings.whatsappEnabled &&
         !settings.whatsappPaired &&
         (step === 'select' || channel === 'whatsapp' || channel === 'both') && (
-          <div className="border border-amber-300 bg-amber-50 rounded-md p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3 text-sm text-amber-900">
-              <AlertCircle className="w-5 h-5 text-amber-700 shrink-0" aria-hidden="true" />
-              <span>
-                Live mode is active, but no WhatsApp device is paired yet. Open Settings and scan the WhatsApp QR code before sending live WhatsApp statements.
-              </span>
-            </div>
-            <motion.button
-              type="button"
-              whileHover={{ y: -1 }}
-              whileTap={{ scale: 0.98 }}
-              transition={{ duration: 0.14, ease: SMOOTH_EASE }}
-              onClick={onOpenSettings}
-              className="px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-semibold hover:bg-[#236530] whitespace-nowrap cursor-pointer shrink-0"
-            >
-              PAIR WHATSAPP
-            </motion.button>
-          </div>
+          <AlertBanner
+            variant="warning"
+            message="Live mode is active, but no WhatsApp device is paired yet. Open Settings and scan the WhatsApp QR code before sending live WhatsApp statements."
+            actionLabel="PAIR WHATSAPP"
+            onAction={() => navigateTo(ROUTES.SETTINGS)}
+          />
         )}
 
       <AnimatePresence mode="wait" initial={false}>
-        {/* STEP 1: SELF SERVICE CHANNEL SELECTION CARDS (matches screenshots 1 & 2) */}
         {step === 'select' && (
           <motion.div
             key="step-select"
@@ -465,117 +442,41 @@ export function DispatchWorkspace({
             className="space-y-6"
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-              <motion.button
-                type="button"
-                disabled={!settings.emailEnabled}
-                onClick={() => handleSelectChannel('email')}
-                onMouseEnter={() => settings.emailEnabled && setHoveredCard('email')}
-                onMouseLeave={() => setHoveredCard((prev) => (prev === 'email' ? null : prev))}
-                onFocus={() => settings.emailEnabled && setHoveredCard('email')}
-                onBlur={() => setHoveredCard((prev) => (prev === 'email' ? null : prev))}
-                whileHover={settings.emailEnabled ? { y: -3 } : undefined}
-                whileTap={settings.emailEnabled ? { scale: 0.99 } : undefined}
-                transition={{ duration: 0.18, ease: SMOOTH_EASE }}
-                className={`relative overflow-hidden bg-white rounded-lg p-12 sm:p-14 text-center shadow-[0_6px_28px_rgba(15,36,55,0.08)] border border-b-[3px] transition-shadow duration-200 disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
-                  emailHovered
-                    ? 'border-[#2B7A3B] border-b-[#2B7A3B] shadow-[0_14px_34px_rgba(43,122,59,0.22)]'
-                    : 'border-slate-200'
-                }`}
-              >
-                <motion.div
-                  aria-hidden="true"
-                  initial={false}
-                  animate={{ scaleY: emailHovered ? 1 : 0 }}
-                  transition={{ duration: 0.2, ease: SMOOTH_EASE }}
-                  style={{ transformOrigin: 'bottom' }}
-                  className="absolute inset-0 bg-[#2B7A3B] pointer-events-none"
-                />
-                <div className="relative z-10">
-                  <span
-                    className={`block font-display text-2xl font-bold transition-colors duration-200 ${
-                      emailHovered ? 'text-white' : 'text-[#0F2437]'
-                    }`}
-                  >
-                    Email Statement
-                  </span>
-                  <span
-                    className={`block text-xs mt-2 transition-colors duration-200 ${
-                      emailHovered ? 'text-emerald-100' : 'text-slate-500'
-                    }`}
-                  >
-                    {settings.emailEnabled
-                      ? 'Validate, encrypt & send via NSSF SMTP'
-                      : 'Email channel disabled'}
-                  </span>
-                  {settings.emailEnabled && (
-                    <kbd
-                      className={`inline-block mt-3 px-2 py-0.5 rounded text-[11px] font-mono border transition-colors duration-200 ${
-                        emailHovered
-                          ? 'bg-white/15 border-white/30 text-white'
-                          : 'bg-slate-50 border-slate-200 text-slate-500'
-                      }`}
-                    >
-                      Ctrl+E
-                    </kbd>
-                  )}
-                </div>
-              </motion.button>
+              <ChannelOptionCard
+                title="Email Statement"
+                subtitle={
+                  settings.emailEnabled
+                    ? 'Validate, encrypt & send via NSSF SMTP'
+                    : 'Email channel disabled'
+                }
+                shortcut="Ctrl+E"
+                enabled={settings.emailEnabled}
+                hovered={hoveredCard === 'email' && settings.emailEnabled}
+                onHoverChange={(isHov) =>
+                  setHoveredCard((prev) =>
+                    isHov ? 'email' : prev === 'email' ? null : prev
+                  )
+                }
+                onSelect={() => handleSelectChannel('email')}
+              />
 
-              <motion.button
-                type="button"
-                disabled={!settings.whatsappEnabled}
-                onClick={() => handleSelectChannel('whatsapp')}
-                onMouseEnter={() => settings.whatsappEnabled && setHoveredCard('whatsapp')}
-                onMouseLeave={() => setHoveredCard((prev) => (prev === 'whatsapp' ? null : prev))}
-                onFocus={() => settings.whatsappEnabled && setHoveredCard('whatsapp')}
-                onBlur={() => setHoveredCard((prev) => (prev === 'whatsapp' ? null : prev))}
-                whileHover={settings.whatsappEnabled ? { y: -3 } : undefined}
-                whileTap={settings.whatsappEnabled ? { scale: 0.99 } : undefined}
-                transition={{ duration: 0.18, ease: SMOOTH_EASE }}
-                className={`relative overflow-hidden bg-white rounded-lg p-12 sm:p-14 text-center shadow-[0_6px_28px_rgba(15,36,55,0.08)] border border-b-[3px] transition-shadow duration-200 disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
-                  whatsappHovered
-                    ? 'border-[#2B7A3B] border-b-[#2B7A3B] shadow-[0_14px_34px_rgba(43,122,59,0.22)]'
-                    : 'border-slate-200'
-                }`}
-              >
-                <motion.div
-                  aria-hidden="true"
-                  initial={false}
-                  animate={{ scaleY: whatsappHovered ? 1 : 0 }}
-                  transition={{ duration: 0.2, ease: SMOOTH_EASE }}
-                  style={{ transformOrigin: 'bottom' }}
-                  className="absolute inset-0 bg-[#2B7A3B] pointer-events-none"
-                />
-                <div className="relative z-10">
-                  <span
-                    className={`block font-display text-2xl font-bold transition-colors duration-200 ${
-                      whatsappHovered ? 'text-white' : 'text-[#0F2437]'
-                    }`}
-                  >
-                    WhatsApp Statement
-                  </span>
-                  <span
-                    className={`block text-xs mt-2 transition-colors duration-200 ${
-                      whatsappHovered ? 'text-emerald-100' : 'text-slate-500'
-                    }`}
-                  >
-                    {settings.whatsappEnabled
-                      ? 'Validate, encrypt & send via WhatsApp'
-                      : 'WhatsApp channel disabled'}
-                  </span>
-                  {settings.whatsappEnabled && (
-                    <kbd
-                      className={`inline-block mt-3 px-2 py-0.5 rounded text-[11px] font-mono border transition-colors duration-200 ${
-                        whatsappHovered
-                          ? 'bg-white/15 border-white/30 text-white'
-                          : 'bg-slate-50 border-slate-200 text-slate-500'
-                      }`}
-                    >
-                      Ctrl+W
-                    </kbd>
-                  )}
-                </div>
-              </motion.button>
+              <ChannelOptionCard
+                title="WhatsApp Statement"
+                subtitle={
+                  settings.whatsappEnabled
+                    ? 'Validate, encrypt & send via WhatsApp'
+                    : 'WhatsApp channel disabled'
+                }
+                shortcut="Ctrl+W"
+                enabled={settings.whatsappEnabled}
+                hovered={hoveredCard === 'whatsapp' && settings.whatsappEnabled}
+                onHoverChange={(isHov) =>
+                  setHoveredCard((prev) =>
+                    isHov ? 'whatsapp' : prev === 'whatsapp' ? null : prev
+                  )
+                }
+                onSelect={() => handleSelectChannel('whatsapp')}
+              />
             </div>
 
             {settings.emailEnabled && settings.whatsappEnabled && (
@@ -610,7 +511,7 @@ export function DispatchWorkspace({
                 >
                   <span>Dispatch via Both Email &amp; WhatsApp</span>
                   <kbd
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors duration-200 ${
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-normal normal-case tracking-normal border transition-colors duration-200 ${
                       bothHovered
                         ? 'bg-white/15 border-white/30 text-white'
                         : 'bg-slate-50 border-slate-200 text-slate-500'
@@ -624,7 +525,6 @@ export function DispatchWorkspace({
           </motion.div>
         )}
 
-        {/* STEP 2: VALIDATION (matches screenshot 3) */}
         {step === 'validate' && (
           <motion.form
             key="step-validate"
@@ -635,49 +535,24 @@ export function DispatchWorkspace({
             onSubmit={handleValidateStep}
             className="space-y-6"
           >
-            {errorMsg && (
-              <motion.div
-                role="alert"
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.16, ease: SMOOTH_EASE }}
-                className="border border-red-200 bg-red-50 rounded-md p-4 flex items-start gap-2.5 text-sm text-red-800"
-              >
-                <AlertCircle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" aria-hidden="true" />
-                <span>{errorMsg}</span>
-              </motion.div>
-            )}
+            {errorMsg && <AlertBanner variant="error" message={errorMsg} />}
 
             <div className="space-y-5">
-              <div>
-                <label
-                  htmlFor="nssf-member-no"
-                  className="block text-sm font-medium text-[#0F2437] mb-2"
-                >
-                  Member Number
-                </label>
-                <div className="relative">
-                  <input
-                    id="nssf-member-no"
-                    required
-                    type="text"
-                    disabled={validating}
-                    readOnly={validating}
-                    placeholder="MEMBER NUMBER"
-                    value={memberNo}
-                    onChange={(e) => {
-                      if (!validating) setMemberNo(e.target.value);
-                    }}
-                    className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm font-mono tabular-nums text-[#0F2437] placeholder:text-slate-400 placeholder:tracking-wider focus:outline-none focus:border-[#2B7A3B] disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
-                  />
-                  <Pencil
-                    className={`w-4 h-4 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none ${
-                      validating ? 'text-slate-300' : 'text-slate-400'
-                    }`}
-                    aria-hidden="true"
-                  />
-                </div>
-              </div>
+              <FormInput
+                id="nssf-member-no"
+                label="Member Number"
+                required
+                type="text"
+                disabled={validating}
+                readOnly={validating}
+                showPencilIcon
+                placeholder="MEMBER NUMBER"
+                value={memberNo}
+                onChange={(e) => {
+                  if (!validating) setMemberNo(e.target.value);
+                }}
+                className="font-mono tabular-nums placeholder:tracking-wider"
+              />
 
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -776,7 +651,7 @@ export function DispatchWorkspace({
                           </div>
                           <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
                             <span className="font-mono tabular-nums">
-                              {(file.size / 1024).toFixed(1)} KB
+                              {formatFileSizeKb(file.size)}
                             </span>
                             <span aria-hidden="true">·</span>
                             <span className="text-[#1E6B34] font-medium">
@@ -831,35 +706,25 @@ export function DispatchWorkspace({
             </div>
 
             <div className="space-y-3 pt-2">
-              <motion.button
-                type="submit"
-                disabled={validating}
-                whileHover={!validating ? { y: -1 } : undefined}
-                whileTap={!validating ? { scale: 0.99 } : undefined}
-                transition={{ duration: 0.15, ease: SMOOTH_EASE }}
-                className="w-full h-12 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-              >
+              <ActionButton type="submit" fullWidth size="lg" disabled={validating}>
                 {validating ? 'VALIDATING STATEMENT...' : 'VALIDATE'}
-              </motion.button>
+              </ActionButton>
 
-              <motion.button
-                type="button"
+              <ActionButton
+                variant="lime"
+                fullWidth
+                size="lg"
                 disabled={validating}
-                whileHover={!validating ? { y: -1 } : undefined}
-                whileTap={!validating ? { scale: 0.99 } : undefined}
-                transition={{ duration: 0.15, ease: SMOOTH_EASE }}
                 onClick={() => {
                   if (!validating) setStep('select');
                 }}
-                className="w-full h-12 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 BACK
-              </motion.button>
+              </ActionButton>
             </div>
           </motion.form>
         )}
 
-        {/* STEP 3: VERIFIED SUMMARY & RECIPIENT DISPATCH */}
         {step === 'confirm' && validatedMeta && (
           <motion.form
             key="step-confirm"
@@ -870,20 +735,8 @@ export function DispatchWorkspace({
             onSubmit={handleDispatch}
             className="space-y-6"
           >
-            {errorMsg && (
-              <motion.div
-                role="alert"
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.16, ease: SMOOTH_EASE }}
-                className="border border-red-200 bg-red-50 rounded-md p-4 flex items-start gap-2.5 text-sm text-red-800"
-              >
-                <AlertCircle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" aria-hidden="true" />
-                <span>{errorMsg}</span>
-              </motion.div>
-            )}
+            {errorMsg && <AlertBanner variant="error" message={errorMsg} />}
 
-            {/* Verified Member Summary */}
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -926,7 +779,6 @@ export function DispatchWorkspace({
               </div>
             </motion.div>
 
-            {/* Channel switcher if user wants to change channel */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
                 {
@@ -979,112 +831,79 @@ export function DispatchWorkspace({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               {(channel === 'email' || channel === 'both') && (
                 <div className={channel === 'email' ? 'sm:col-span-2' : ''}>
-                  <label
-                    htmlFor="member-email"
-                    className="block text-sm font-medium text-[#0F2437] mb-2"
-                  >
-                    Member Email Address
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="member-email"
-                      required
-                      type="email"
-                      disabled={submitting}
-                      readOnly={submitting}
-                      placeholder="MEMBER EMAIL ADDRESS"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm text-[#0F2437] placeholder:text-slate-400 focus:outline-none focus:border-[#2B7A3B] disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
-                    />
-                    <Pencil
-                      className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none"
-                      aria-hidden="true"
-                    />
-                  </div>
+                  <FormInput
+                    id="member-email"
+                    label="Member Email Address"
+                    required
+                    type="email"
+                    disabled={submitting}
+                    readOnly={submitting}
+                    showPencilIcon
+                    placeholder="MEMBER EMAIL ADDRESS"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
                 </div>
               )}
 
               {(channel === 'whatsapp' || channel === 'both') && (
                 <div className={channel === 'whatsapp' ? 'sm:col-span-2' : ''}>
-                  <label
-                    htmlFor="member-whatsapp"
-                    className="block text-sm font-medium text-[#0F2437] mb-2"
-                  >
-                    Member WhatsApp Number
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="member-whatsapp"
-                      required
-                      type="tel"
-                      disabled={submitting}
-                      readOnly={submitting}
-                      placeholder="254712345678"
-                      value={whatsapp}
-                      onChange={(e) => setWhatsapp(e.target.value)}
-                      className="w-full h-14 px-5 pr-12 rounded border border-[#D1D9E0] bg-white text-sm font-mono tabular-nums text-[#0F2437] placeholder:text-slate-400 focus:outline-none focus:border-[#2B7A3B] disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
-                    />
-                    <Pencil
-                      className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none"
-                      aria-hidden="true"
-                    />
-                  </div>
+                  <FormInput
+                    id="member-whatsapp"
+                    label="Member WhatsApp Number"
+                    required
+                    type="tel"
+                    disabled={submitting}
+                    readOnly={submitting}
+                    showPencilIcon
+                    placeholder="254712345678"
+                    value={whatsapp}
+                    onChange={(e) => setWhatsapp(e.target.value)}
+                    className="font-mono tabular-nums"
+                  />
                 </div>
               )}
             </div>
 
             <div className="space-y-3 pt-2">
               {settings.previewBeforeDispatch && (
-                <motion.button
-                  type="button"
+                <ActionButton
+                  variant="outlineGreen"
+                  fullWidth
+                  size="lg"
                   disabled={submitting}
-                  whileHover={!submitting ? { y: -1 } : undefined}
-                  whileTap={!submitting ? { scale: 0.99 } : undefined}
-                  transition={{ duration: 0.15, ease: SMOOTH_EASE }}
                   onClick={() => setPreviewOpen(true)}
-                  className="w-full h-12 rounded border border-[#2B7A3B] bg-white hover:bg-emerald-50 text-[#1E6B34] text-xs font-bold tracking-[0.16em] uppercase inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <Eye className="w-4 h-4" aria-hidden="true" />
                   <span>PREVIEW PARSED DETAILS &amp; PDF</span>
                   <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono font-normal normal-case tracking-normal border border-emerald-200 bg-emerald-50 text-[#1E6B34]">
                     Ctrl+P
                   </kbd>
-                </motion.button>
+                </ActionButton>
               )}
 
-              <motion.button
-                type="submit"
-                disabled={submitting}
-                whileHover={!submitting ? { y: -1 } : undefined}
-                whileTap={!submitting ? { scale: 0.99 } : undefined}
-                transition={{ duration: 0.15, ease: SMOOTH_EASE }}
-                className="w-full h-12 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-              >
+              <ActionButton type="submit" fullWidth size="lg" disabled={submitting}>
                 {submitting
                   ? 'ENCRYPTING & DISPATCHING...'
                   : 'ENCRYPT & DISPATCH STATEMENT'}
-              </motion.button>
+              </ActionButton>
 
-              <motion.button
-                type="button"
+              <ActionButton
+                variant="lime"
+                fullWidth
+                size="lg"
                 disabled={submitting}
-                whileHover={!submitting ? { y: -1 } : undefined}
-                whileTap={!submitting ? { scale: 0.99 } : undefined}
-                transition={{ duration: 0.15, ease: SMOOTH_EASE }}
                 onClick={() => {
                   if (!submitting) setStep('validate');
                 }}
-                className="w-full h-12 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-[0.18em] uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 BACK
-              </motion.button>
+              </ActionButton>
             </div>
           </motion.form>
         )}
       </AnimatePresence>
 
-      {/* Global shortcut legend */}
       <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pt-2 text-[11px] text-slate-500">
         <span className="inline-flex items-center gap-1.5 font-medium text-slate-600">
           <Keyboard className="w-3.5 h-3.5 text-[#2B7A3B]" aria-hidden="true" />
@@ -1130,7 +949,7 @@ export function DispatchWorkspace({
           passwordMode={settings.passwordMode}
           submitting={submitting}
           onClose={() => setPreviewOpen(false)}
-          onConfirmDispatch={() => executeDispatch()}
+          onConfirmDispatch={() => void executeDispatch()}
         />
       )}
     </div>

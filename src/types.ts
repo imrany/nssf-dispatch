@@ -107,6 +107,12 @@ export interface AuditLog {
   details: string;
 }
 
+export type PendingSettingsAction =
+  | { type: 'route'; targetPath: string }
+  | { type: 'refresh_settings' }
+  | { type: 'browser_reload' }
+  | { type: 'lock_settings' };
+
 export interface AdminAuthStatus {
   adminExists: boolean;
   authenticated: boolean;

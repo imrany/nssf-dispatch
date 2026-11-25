@@ -1,12 +1,19 @@
+import { useAppName } from '../context/AppContext';
+
 interface NssfLogoProps {
   subtitle?: string;
+  showSubtitle?: boolean;
   compact?: boolean;
 }
 
 export function NssfLogo({
-  subtitle = 'NSSF DIGITAL STATEMENT DISPATCH',
+  subtitle,
+  showSubtitle = true,
   compact = false,
 }: NssfLogoProps) {
+  const appName = useAppName();
+  const displaySubtitle = subtitle ?? appName;
+
   return (
     <div className="inline-flex flex-col items-start select-none">
       <img
@@ -19,9 +26,9 @@ export function NssfLogo({
         }
       />
 
-      {subtitle && (
+      {showSubtitle && displaySubtitle && (
         <div className="mt-2.5 text-[11px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
-          {subtitle}
+          {displaySubtitle}
         </div>
       )}
     </div>

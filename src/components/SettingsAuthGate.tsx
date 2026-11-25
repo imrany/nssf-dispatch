@@ -1,24 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import {
-  AlertCircle,
-  ArrowLeft,
-  Eye,
-  EyeOff,
-  KeyRound,
-  Lock,
-} from 'lucide-react';
-import type { AdminAuthStatus, AppSettings } from '../types';
+import { AlertCircle, KeyRound, Lock } from 'lucide-react';
+import { useApp } from '../context/AppContext';
+import type { AdminAuthStatus } from '../types';
+import { ApiError, fetchAuthStatusApi, loginAdminApi, setupAdminApi } from '../utils/api';
+import { ROUTES, SMOOTH_EASE } from '../utils/constants';
+import { isValidAdminUsername } from '../utils/validation';
 import { toast } from './Toaster';
+import { ActionButton, AlertBanner, BackButton, FormInput } from './ui';
 
-interface SettingsAuthGateProps {
-  onAuthenticated: (token: string, username: string, fullSettings: AppSettings) => void;
-  onBackToDispatch: () => void;
-}
+export function SettingsAuthGate() {
+  const { appName, authenticateAdmin, navigateTo } = useApp();
 
-const SMOOTH_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
-
-export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: SettingsAuthGateProps) {
   const [status, setStatus] = useState<AdminAuthStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [statusError, setStatusError] = useState('');
@@ -26,8 +19,6 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
@@ -36,9 +27,7 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
     setLoadingStatus(true);
     setStatusError('');
     try {
-      const res = await fetch('/api/auth/status');
-      if (!res.ok) throw new Error('Unable to check administrator status.');
-      const data = (await res.json()) as AdminAuthStatus;
+      const data = await fetchAuthStatusApi();
       setStatus(data);
     } catch (err) {
       setStatusError(
@@ -50,7 +39,7 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
   };
 
   useEffect(() => {
-    fetchAuthStatus();
+    void fetchAuthStatus();
   }, []);
 
   const handleSetupSubmit = async (e: React.FormEvent) => {
@@ -58,7 +47,7 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
     setFormError('');
 
     const cleanUser = username.trim();
-    if (!/^[A-Za-z0-9._@-]{3,64}$/.test(cleanUser)) {
+    if (!isValidAdminUsername(cleanUser)) {
       const msg = 'Username must be 3 to 64 characters (letters, numbers, ., _, @, -).';
       setFormError(msg);
       toast.warning('Invalid username', msg);
@@ -81,30 +70,20 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/auth/setup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: cleanUser, password }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        const msg = data.error || 'Failed to initialize administrator account.';
-        setFormError(msg);
-        toast.error('Setup failed', msg);
-        if (res.status === 409) {
-          await fetchAuthStatus();
-        }
-        return;
-      }
+      const data = await setupAdminApi(cleanUser, password);
       toast.success(
         'Administrator account created',
         `Signed in as ${data.username}. System Settings unlocked.`
       );
-      onAuthenticated(data.token, data.username, data.settings);
-    } catch {
-      const msg = 'Network error during administrator setup.';
+      authenticateAdmin(data.token, data.username, data.settings);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Failed to initialize administrator account.';
       setFormError(msg);
-      toast.error('Network error', msg);
+      toast.error('Setup failed', msg);
+      if (err instanceof ApiError && err.status === 409) {
+        await fetchAuthStatus();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -123,24 +102,13 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        const msg = data.error || 'Invalid administrator credentials.';
-        setFormError(msg);
-        toast.error('Authentication failed', msg);
-        return;
-      }
+      const data = await loginAdminApi(username.trim(), password);
       toast.success('Settings unlocked', `Signed in as ${data.username}.`);
-      onAuthenticated(data.token, data.username, data.settings);
-    } catch {
-      const msg = 'Network error verifying administrator credentials.';
+      authenticateAdmin(data.token, data.username, data.settings);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Invalid administrator credentials.';
       setFormError(msg);
-      toast.error('Network error', msg);
+      toast.error('Authentication failed', msg);
     } finally {
       setSubmitting(false);
     }
@@ -164,28 +132,13 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
   if (statusError || !status) {
     return (
       <div className="py-12 max-w-md mx-auto space-y-4">
-        <div>
-          <button
-            type="button"
-            onClick={onBackToDispatch}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Back to Service Desk</span>
-          </button>
-        </div>
+        <BackButton label="Back to Service Desk" onClick={() => navigateTo(ROUTES.STATEMENTS)} />
         <div className="text-center pt-8 space-y-4">
           <AlertCircle className="w-8 h-8 text-red-600 mx-auto" aria-hidden="true" />
           <div className="text-sm font-semibold text-[#0F2437]">
             {statusError || 'Unable to verify administrator status.'}
           </div>
-          <button
-            type="button"
-            onClick={fetchAuthStatus}
-            className="px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-bold uppercase tracking-wider hover:bg-[#226430] cursor-pointer"
-          >
-            Retry
-          </button>
+          <ActionButton onClick={fetchAuthStatus}>Retry</ActionButton>
         </div>
       </div>
     );
@@ -195,16 +148,7 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
 
   return (
     <div className="py-6 sm:py-10 max-w-lg mx-auto space-y-4">
-      <div>
-        <button
-          type="button"
-          onClick={onBackToDispatch}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Back to Service Desk</span>
-        </button>
-      </div>
+      <BackButton label="Back to Service Desk" onClick={() => navigateTo(ROUTES.STATEMENTS)} />
 
       <motion.div
         initial={{ opacity: 0, y: 10 }}
@@ -213,15 +157,13 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
         className="overflow-hidden"
       >
         <div className="py-5 border-b-4 border-[#2B7A3B] flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#1E6B34]">
-                Settings
-              </div>
-              <h1 className="font-display text-xl font-extrabold tracking-tight text-[#0F2437]">
-                {isSetupMode ? 'Setup Admin Account' : 'Administrator Sign in'}
-              </h1>
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#1E6B34]">
+              {appName}
             </div>
+            <h1 className="font-display text-xl font-extrabold tracking-tight text-[#0F2437] mt-0.5">
+              {isSetupMode ? 'Setup Admin Account' : 'Administrator Sign in'}
+            </h1>
           </div>
         </div>
 
@@ -237,110 +179,50 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
                 : 'Sign in to view or modify Settings.'}
           </p>
 
-          {formError && (
-            <div
-              role="alert"
-              className="border border-red-200 bg-red-50 rounded-md p-3.5 flex items-start gap-2.5 text-xs text-red-800"
-            >
-              <AlertCircle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" aria-hidden="true" />
-              <span>{formError}</span>
-            </div>
-          )}
+          {formError && <AlertBanner variant="error" message={formError} className="text-xs p-3.5" />}
 
           {(!status.envPasscodeConfigured || isSetupMode) && (
-            <div>
-              <label
-                htmlFor="admin-username"
-                className="block text-xs font-semibold text-[#0F2437] mb-1.5"
-              >
-                Administrator Username
-              </label>
-              <input
-                id="admin-username"
-                type="text"
-                required
-                autoComplete="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin"
-                className="w-full h-11 px-3.5 rounded-md border border-slate-300 text-sm text-[#0F2437] focus:outline-none focus:border-[#2B7A3B]"
-              />
-            </div>
+            <FormInput
+              id="admin-username"
+              label="Administrator Username"
+              variant="compact"
+              required
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="admin"
+            />
           )}
 
-          <div>
-            <label
-              htmlFor="admin-password"
-              className="block text-xs font-semibold text-[#0F2437] mb-1.5"
-            >
-              {status.envPasscodeConfigured ? 'Administrator Passcode' : 'Password'}
-            </label>
-            <div className="relative">
-              <input
-                id="admin-password"
-                type={showPassword ? 'text' : 'password'}
-                required
-                autoComplete={isSetupMode ? 'new-password' : 'current-password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={isSetupMode ? 'Minimum 8 characters' : 'Enter password'}
-                className="w-full h-11 px-3.5 pr-11 rounded-md border border-slate-300 text-sm text-[#0F2437] focus:outline-none focus:border-[#2B7A3B]"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((prev) => !prev)}
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-[#0F2437] cursor-pointer"
-              >
-                {showPassword ? (
-                  <EyeOff className="w-4 h-4" aria-hidden="true" />
-                ) : (
-                  <Eye className="w-4 h-4" aria-hidden="true" />
-                )}
-              </button>
-            </div>
-          </div>
+          <FormInput
+            id="admin-password"
+            label={status.envPasscodeConfigured ? 'Administrator Passcode' : 'Password'}
+            variant="compact"
+            passwordToggle
+            required
+            autoComplete={isSetupMode ? 'new-password' : 'current-password'}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={isSetupMode ? 'Minimum 8 characters' : 'Enter password'}
+          />
 
           {isSetupMode && (
-            <div>
-              <label
-                htmlFor="admin-confirm-password"
-                className="block text-xs font-semibold text-[#0F2437] mb-1.5"
-              >
-                Confirm Password
-              </label>
-              <div className="relative">
-                <input
-                  id="admin-confirm-password"
-                  type={showConfirm ? 'text' : 'password'}
-                  required
-                  autoComplete="new-password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Re-enter password"
-                  className="w-full h-11 px-3.5 pr-11 rounded-md border border-slate-300 text-sm text-[#0F2437] focus:outline-none focus:border-[#2B7A3B]"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirm((prev) => !prev)}
-                  aria-label={showConfirm ? 'Hide confirmation password' : 'Show confirmation password'}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-[#0F2437] cursor-pointer"
-                >
-                  {showConfirm ? (
-                    <EyeOff className="w-4 h-4" aria-hidden="true" />
-                  ) : (
-                    <Eye className="w-4 h-4" aria-hidden="true" />
-                  )}
-                </button>
-              </div>
-            </div>
+            <FormInput
+              id="admin-confirm-password"
+              label="Confirm Password"
+              variant="compact"
+              passwordToggle
+              hidePasswordLabel="Hide confirmation password"
+              showPasswordLabel="Show confirmation password"
+              required
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Re-enter password"
+            />
           )}
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full h-11 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-[0.16em] uppercase inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 cursor-pointer"
-          >
+          <ActionButton type="submit" fullWidth disabled={submitting} className="h-11">
             <KeyRound className="w-4 h-4" aria-hidden="true" />
             <span>
               {submitting
@@ -351,7 +233,7 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
                   ? 'CREATE ADMIN'
                   : 'SIGN IN'}
             </span>
-          </button>
+          </ActionButton>
         </form>
       </motion.div>
     </div>

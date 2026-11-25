@@ -1,34 +1,32 @@
 import { ExternalLink } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { ActiveTab } from '../types';
+import { useLocation } from 'react-router-dom';
+import { useApp } from '../context/AppContext';
+import { ROUTES } from '../utils/constants';
+import { sanitizePortalUrl } from '../utils/validation';
 
-interface HeaderProps {
-  activeTab: ActiveTab;
-  onTabChange: (tab: ActiveTab) => void;
-  portalUrl: string;
-}
+export function Header() {
+  const { appName, settings, navigateTo } = useApp();
+  const location = useLocation();
 
-export function Header({ activeTab, onTabChange, portalUrl }: HeaderProps) {
-  const navItems: Array<{ id: ActiveTab; label: string }> = [
-    { id: 'dispatch', label: 'Self Service' },
-    { id: 'settings', label: 'Settings' },
+  const navItems = [
+    { path: ROUTES.STATEMENTS, label: 'Self Service' },
+    { path: ROUTES.SETTINGS, label: 'Settings' },
   ];
 
-  const safePortalHref = /^https?:\/\//i.test(portalUrl)
-    ? portalUrl
-    : 'https://nssfdigital.enssf.co.ke';
+  const safePortalHref = sanitizePortalUrl(settings.portalUrl);
 
   return (
     <header className="bg-white border-b border-slate-200">
       <div className="max-w-5xl mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-8">
         <button
           type="button"
-          onClick={() => onTabChange('dispatch')}
-          aria-label="NSSF Digital Statement Dispatch Home"
+          onClick={() => navigateTo(ROUTES.STATEMENTS)}
+          aria-label={`${appName} Home`}
           className="shrink-0 cursor-pointer flex items-center focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#2B7A3B]"
         >
           <img
-            src="/assets/aistudio/nssf-cl_d27cbb88.png"
+            src="/assets/nssf-cl_d27cbb88.png"
             alt="NSSF — Growing You. For Good"
             className="h-9 w-auto object-contain block"
           />
@@ -37,12 +35,13 @@ export function Header({ activeTab, onTabChange, portalUrl }: HeaderProps) {
         <nav className="flex items-center gap-7 overflow-x-auto" aria-label="Primary navigation">
           {navItems.map((item) => {
             const isActive =
-              activeTab === item.id || (item.id === 'settings' && activeTab === 'audit');
+              location.pathname === item.path ||
+              (item.path === ROUTES.SETTINGS && location.pathname === ROUTES.AUDIT);
             return (
               <button
-                key={item.id}
+                key={item.path}
                 type="button"
-                onClick={() => onTabChange(item.id)}
+                onClick={() => navigateTo(item.path)}
                 className={`relative h-16 px-1 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-[#2B7A3B] ${
                   isActive
                     ? 'text-[#1E6B34]'

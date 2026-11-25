@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Eye, FileText, Lock, Send, ShieldCheck, X } from 'lucide-react';
 import type { DispatchChannel, StatementMeta } from '../types';
+import { SMOOTH_EASE } from '../utils/constants';
+import { formatFileSizeKb, isValidEmail, isValidWhatsappNumber } from '../utils/validation';
+import { KeyValueList, type KeyValueItem } from './ui';
 
 interface StatementPreviewModalProps {
   open: boolean;
@@ -16,8 +19,6 @@ interface StatementPreviewModalProps {
   onClose: () => void;
   onConfirmDispatch: () => void;
 }
-
-const SMOOTH_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 export function StatementPreviewModal({
   open,
@@ -65,8 +66,58 @@ export function StatementPreviewModal({
     .join(' · ');
 
   const canDispatchDirectly =
-    ((channel !== 'email' && channel !== 'both') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) &&
-    ((channel !== 'whatsapp' && channel !== 'both') || whatsapp.replace(/[^\d]/g, '').length >= 9);
+    ((channel !== 'email' && channel !== 'both') || isValidEmail(email)) &&
+    ((channel !== 'whatsapp' && channel !== 'both') || isValidWhatsappNumber(whatsapp));
+
+  const parsedItems: KeyValueItem[] = meta
+    ? [
+        { label: 'Member Name', value: meta.memberName, valueClassName: 'font-bold text-[#0F2437]' },
+        {
+          label: 'NSSF Member No',
+          value: meta.memberNo,
+          valueClassName: 'font-mono font-bold text-[#0F2437] tabular-nums',
+        },
+        {
+          label: 'ID Card No (Masked)',
+          value: meta.maskedIdCardNo || 'Protected',
+          valueClassName: 'font-mono font-semibold text-[#0F2437] tabular-nums',
+        },
+        {
+          label: 'KRA PIN',
+          value: meta.kraPin || '-',
+          valueClassName: 'font-mono font-medium text-[#0F2437]',
+        },
+        { label: 'Date of Birth', value: meta.dateOfBirth || '-', valueClassName: 'font-medium text-[#0F2437]' },
+        {
+          label: 'Date Registered',
+          value: meta.dateRegistered || '-',
+          valueClassName: 'font-medium text-[#0F2437]',
+        },
+        { label: 'Employer', value: meta.employer || '-', valueClassName: 'font-medium text-[#0F2437]' },
+        { label: 'Statement Period', value: meta.period || '-', valueClassName: 'font-medium text-[#0F2437]' },
+        {
+          label: 'Statement Date',
+          value: meta.statementDate || '-',
+          valueClassName: 'font-medium text-[#0F2437]',
+        },
+        {
+          label: 'Standard Amount',
+          value: `KES ${meta.standardAmount}`,
+          valueClassName: 'font-mono font-semibold text-[#0F2437] tabular-nums',
+        },
+        {
+          label: 'Voluntary Amount',
+          value: `KES ${meta.voluntaryAmount}`,
+          valueClassName: 'font-mono font-semibold text-[#0F2437] tabular-nums',
+        },
+        {
+          label: 'Total Fund Balance',
+          labelClassName: 'font-semibold',
+          value: `KES ${meta.totalAmount}`,
+          valueClassName: 'font-mono font-bold text-[#1E6B34] tabular-nums',
+        },
+      ]
+    : [];
 
   return (
     <AnimatePresence>
@@ -91,7 +142,6 @@ export function StatementPreviewModal({
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-5xl bg-white rounded-xl border border-slate-200 shadow-[0_24px_64px_rgba(15,36,55,0.28)] overflow-hidden my-auto"
           >
-            {/* Header */}
             <div className="px-5 sm:px-6 py-4 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between gap-4">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-9 h-9 rounded-md bg-[#2B7A3B] text-white flex items-center justify-center shrink-0">
@@ -120,9 +170,7 @@ export function StatementPreviewModal({
               </button>
             </div>
 
-            {/* Body */}
             <div className="p-5 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-h-[75vh] overflow-y-auto">
-              {/* Left: Parsed Member Details */}
               <div className="lg:col-span-5 space-y-4">
                 <div className="border border-emerald-200 bg-emerald-50/40 rounded-lg p-4 space-y-3">
                   <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#1E6B34]">
@@ -130,64 +178,10 @@ export function StatementPreviewModal({
                     <span>Parsed Member Details</span>
                   </div>
 
-                  <dl className="divide-y divide-emerald-200/60 text-xs">
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Member Name</dt>
-                      <dd className="font-bold text-[#0F2437] text-right">{meta.memberName}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">NSSF Member No</dt>
-                      <dd className="font-mono font-bold text-[#0F2437] tabular-nums">{meta.memberNo}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">ID Card No (Masked)</dt>
-                      <dd className="font-mono font-semibold text-[#0F2437] tabular-nums">
-                        {meta.maskedIdCardNo || 'Protected'}
-                      </dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">KRA PIN</dt>
-                      <dd className="font-mono font-medium text-[#0F2437]">{meta.kraPin || '-'}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Date of Birth</dt>
-                      <dd className="font-medium text-[#0F2437]">{meta.dateOfBirth || '-'}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Date Registered</dt>
-                      <dd className="font-medium text-[#0F2437]">{meta.dateRegistered || '-'}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Employer</dt>
-                      <dd className="font-medium text-[#0F2437] text-right">{meta.employer || '-'}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Statement Period</dt>
-                      <dd className="font-medium text-[#0F2437] text-right">{meta.period || '-'}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Statement Date</dt>
-                      <dd className="font-medium text-[#0F2437]">{meta.statementDate || '-'}</dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Standard Amount</dt>
-                      <dd className="font-mono font-semibold text-[#0F2437] tabular-nums">
-                        KES {meta.standardAmount}
-                      </dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500">Voluntary Amount</dt>
-                      <dd className="font-mono font-semibold text-[#0F2437] tabular-nums">
-                        KES {meta.voluntaryAmount}
-                      </dd>
-                    </div>
-                    <div className="py-2 flex justify-between gap-3">
-                      <dt className="text-slate-500 font-semibold">Total Fund Balance</dt>
-                      <dd className="font-mono font-bold text-[#1E6B34] tabular-nums">
-                        KES {meta.totalAmount}
-                      </dd>
-                    </div>
-                  </dl>
+                  <KeyValueList
+                    items={parsedItems}
+                    dividerClassName="divide-y divide-emerald-200/60"
+                  />
                 </div>
 
                 <div className="border border-slate-200 rounded-lg p-4 space-y-2 text-xs bg-slate-50/70">
@@ -220,7 +214,6 @@ export function StatementPreviewModal({
                 </div>
               </div>
 
-              {/* Right: Generated PDF Preview */}
               <div className="lg:col-span-7 flex flex-col border border-slate-200 rounded-lg overflow-hidden bg-slate-100">
                 <div className="px-4 py-2.5 bg-white border-b border-slate-200 flex items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2 font-semibold text-[#0F2437] truncate">
@@ -228,7 +221,7 @@ export function StatementPreviewModal({
                     <span className="truncate">{predictedFilename}</span>
                   </div>
                   <span className="text-[11px] font-mono text-slate-500 shrink-0">
-                    {file ? `${(file.size / 1024).toFixed(1)} KB · PDF` : 'PDF'}
+                    {file ? `${formatFileSizeKb(file.size)} · PDF` : 'PDF'}
                   </span>
                 </div>
 
@@ -246,7 +239,6 @@ export function StatementPreviewModal({
               </div>
             </div>
 
-            {/* Footer */}
             <div className="px-5 sm:px-6 py-4 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row items-center justify-between gap-3">
               <span className="text-xs text-slate-500">
                 {canDispatchDirectly

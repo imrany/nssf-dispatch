@@ -2,7 +2,9 @@ import { useState, type CSSProperties } from 'react';
 import { Download, FileKey2, Mail, MessageSquare } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import type { DispatchReceipt } from '../types';
+import { SMOOTH_EASE } from '../utils/constants';
 import { NssfLogo } from './NssfLogo';
+import { ActionButton, AlertBanner, KeyValueList, type KeyValueItem } from './ui';
 
 interface DispatchSuccessProps {
   receipt: DispatchReceipt;
@@ -20,12 +22,53 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
     receipt.channel === 'WHATSAPP' ? 'text' : 'email'
   );
 
+  const receiptRows: KeyValueItem[] = [
+    { label: 'Member Name', value: receipt.memberName, delayMs: 260 },
+    {
+      label: 'NSSF Member No',
+      value: receipt.memberNo,
+      valueClassName: 'font-mono font-semibold text-[#0F2437] tabular-nums',
+      delayMs: 300,
+    },
+    {
+      label: 'Statement Period',
+      value: receipt.period,
+      valueClassName: 'font-medium text-[#0F2437]',
+      delayMs: 340,
+    },
+    {
+      label: 'Total Fund Balance',
+      value: `KES ${receipt.totalAmount}`,
+      valueClassName: 'font-mono font-bold text-[#1E6B34] tabular-nums',
+      delayMs: 380,
+    },
+    {
+      label: 'Renamed Attachment',
+      value: receipt.renamedFile,
+      valueClassName: 'font-mono text-xs font-semibold text-[#1E6B34] break-all',
+      delayMs: 420,
+    },
+    {
+      label: 'Sent To',
+      value: receipt.destination,
+      valueClassName: 'font-medium text-[#0F2437] break-all',
+      delayMs: 460,
+    },
+    {
+      label: 'Member Unlock Password',
+      value: receipt.passwordGuide,
+      valueClassName: 'text-xs text-[#0F2437] font-medium',
+      stacked: true,
+      delayMs: 500,
+    },
+  ];
+
   return (
     <div className="py-4 sm:py-8 space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-6">
         <div>
           <div className="dispatch-animate-up" style={delayStyle(0)}>
-            <NssfLogo subtitle="NSSF DIGITAL STATEMENT DISPATCH" />
+            <NssfLogo />
           </div>
 
           <div className="flex items-center gap-3.5 mt-3">
@@ -104,7 +147,7 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
           <motion.a
             whileHover={{ y: -1 }}
             whileTap={{ scale: 0.99 }}
-            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.16, ease: SMOOTH_EASE }}
             href={receipt.downloadUrl}
             download={receipt.renamedFile}
             className="dispatch-cta-sheen inline-flex items-center gap-2 px-5 h-11 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-wider uppercase transition-colors whitespace-nowrap"
@@ -112,25 +155,19 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
             <Download className="w-4 h-4" aria-hidden="true" />
             <span>DOWNLOAD PROTECTED PDF</span>
           </motion.a>
-          <motion.button
-            whileHover={{ y: -1 }}
-            whileTap={{ scale: 0.99 }}
-            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-            type="button"
-            onClick={onReset}
-            className="inline-flex items-center gap-2 px-5 h-11 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-wider uppercase transition-colors whitespace-nowrap cursor-pointer"
-          >
+          <ActionButton variant="lime" onClick={onReset} className="h-11 px-5">
             <span>NEW DISPATCH</span>
-          </motion.button>
+          </ActionButton>
         </div>
       </div>
 
       {receipt.deliveryMode === 'preview' && (
-        <div
-          className="dispatch-animate-up border border-amber-200 bg-amber-50 rounded-md px-4 py-3 text-xs text-amber-900"
-          style={delayStyle(190)}
-        >
-          Packaged in Preview Mode: the PDF has been RC4-128 encrypted, renamed, and logged to SQLite. Switch to Live SMTP &amp; WhatsApp in Settings when ready to transmit externally.
+        <div className="dispatch-animate-up" style={delayStyle(190)}>
+          <AlertBanner
+            variant="warning"
+            className="text-xs"
+            message="Packaged in Preview Mode: the PDF has been RC4-128 encrypted, renamed, and logged to SQLite. Switch to Live SMTP & WhatsApp in Settings when ready to transmit externally."
+          />
         </div>
       )}
 
@@ -146,38 +183,12 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
             </h2>
           </div>
 
-          <dl className="divide-y divide-slate-100 text-sm">
-            <div className="dispatch-row-reveal py-2.5 flex items-center justify-between gap-4" style={delayStyle(260)}>
-              <dt className="text-slate-500">Member Name</dt>
-              <dd className="font-semibold text-[#0F2437] text-right">{receipt.memberName}</dd>
-            </div>
-            <div className="dispatch-row-reveal py-2.5 flex items-center justify-between gap-4" style={delayStyle(300)}>
-              <dt className="text-slate-500">NSSF Member No</dt>
-              <dd className="font-mono font-semibold text-[#0F2437] tabular-nums">{receipt.memberNo}</dd>
-            </div>
-            <div className="dispatch-row-reveal py-2.5 flex items-center justify-between gap-4" style={delayStyle(340)}>
-              <dt className="text-slate-500">Statement Period</dt>
-              <dd className="font-medium text-[#0F2437] text-right">{receipt.period}</dd>
-            </div>
-            <div className="dispatch-row-reveal py-2.5 flex items-center justify-between gap-4" style={delayStyle(380)}>
-              <dt className="text-slate-500">Total Fund Balance</dt>
-              <dd className="font-mono font-bold text-[#1E6B34] tabular-nums">KES {receipt.totalAmount}</dd>
-            </div>
-            <div className="dispatch-row-reveal py-2.5 flex items-center justify-between gap-4" style={delayStyle(420)}>
-              <dt className="text-slate-500">Renamed Attachment</dt>
-              <dd className="font-mono text-xs font-semibold text-[#1E6B34] text-right break-all">
-                {receipt.renamedFile}
-              </dd>
-            </div>
-            <div className="dispatch-row-reveal py-2.5 flex items-center justify-between gap-4" style={delayStyle(460)}>
-              <dt className="text-slate-500">Sent To</dt>
-              <dd className="font-medium text-[#0F2437] text-right break-all">{receipt.destination}</dd>
-            </div>
-            <div className="dispatch-row-reveal py-2.5 space-y-1" style={delayStyle(500)}>
-              <dt className="text-slate-500">Member Unlock Password</dt>
-              <dd className="text-xs text-[#0F2437] font-medium">{receipt.passwordGuide}</dd>
-            </div>
-          </dl>
+          <KeyValueList
+            items={receiptRows}
+            className="text-sm"
+            rowClassName="py-2.5"
+            animateRows
+          />
         </section>
 
         <section
@@ -256,4 +267,3 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
     </div>
   );
 }
-

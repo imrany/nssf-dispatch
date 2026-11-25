@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  ArrowLeft,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -12,52 +11,20 @@ import {
   Search,
   X,
 } from 'lucide-react';
+import { useApp } from '../context/AppContext';
 import type { AuditLog } from '../types';
+import { ApiError, fetchAuditLogsApi } from '../utils/api';
+import { ROUTES, SMOOTH_EASE } from '../utils/constants';
+import { buildAuditCsvBlob, buildAuditExcelBlob, triggerBlobDownload } from '../utils/download';
 import { toast } from './Toaster';
-
-interface AuditLogsViewProps {
-  adminToken: string;
-  onGoToDispatch: () => void;
-  onBackToSettings: () => void;
-  onAuthExpired: () => void;
-}
-
-const SMOOTH_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
-
-function sanitizeSpreadsheetCell(value: string | number): string {
-  const str = String(value ?? '');
-  return /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
-}
-
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+import { ActionButton, BackButton, PageHeader } from './ui';
 
 type ChannelFilter = 'ALL' | 'EMAIL' | 'WHATSAPP' | 'BOTH';
 type StatusFilter = 'ALL' | 'SENT' | 'DISPATCHED (PREVIEW)' | 'FAILED' | 'VALIDATION_FAILED';
 
-export function AuditLogsView({
-  adminToken,
-  onGoToDispatch,
-  onBackToSettings,
-  onAuthExpired,
-}: AuditLogsViewProps) {
+export function AuditLogsView() {
+  const { appName, adminToken, navigateTo, logoutAdmin } = useApp();
+
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -66,30 +33,27 @@ export function AuditLogsView({
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
+    if (!adminToken) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/audit', {
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.status === 401) {
-        onAuthExpired();
+      const data = await fetchAuditLogsApi(adminToken);
+      setLogs(Array.isArray(data) ? data : []);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        logoutAdmin('expired');
         return;
       }
-      if (!res.ok) throw new Error('Server returned an error');
-      const data = await res.json();
-      setLogs(Array.isArray(data) ? data : []);
-    } catch {
       setLogs([]);
       toast.error('Failed to load audit logs', 'Unable to query SQLite audit history.');
     } finally {
       setLoading(false);
     }
-  };
+  }, [adminToken, logoutAdmin]);
 
   useEffect(() => {
-    loadLogs();
-  }, [adminToken]);
+    void loadLogs();
+  }, [loadLogs]);
 
   useEffect(() => {
     if (!exportMenuOpen) return;
@@ -140,144 +104,20 @@ export function AuditLogsView({
 
   const exportCsv = () => {
     setExportMenuOpen(false);
-    const headers = [
-      'ID',
-      'Timestamp',
-      'MemberNo',
-      'MemberName',
-      'Channel',
-      'Destination',
-      'Filename',
-      'Status',
-      'Details',
-    ];
-    const escapeCsv = (val: string | number) =>
-      `"${sanitizeSpreadsheetCell(val).replace(/"/g, '""')}"`;
-    const rows = filteredLogs.map((l) =>
-      [
-        l.id,
-        l.timestamp,
-        l.memberNo,
-        l.memberName,
-        l.channel,
-        l.destination,
-        l.renamedFile,
-        l.status,
-        l.details,
-      ]
-        .map(escapeCsv)
-        .join(',')
-    );
-    const csv = `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`;
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    triggerDownload(blob, `NSSF_Compliance_Audit_${new Date().toISOString().slice(0, 10)}.csv`);
+    const blob = buildAuditCsvBlob(filteredLogs);
+    triggerBlobDownload(blob, `NSSF_Compliance_Audit_${new Date().toISOString().slice(0, 10)}.csv`);
     toast.success('CSV audit log exported', `${filteredLogs.length} compliance record(s) downloaded.`);
   };
 
   const exportExcel = () => {
     setExportMenuOpen(false);
     const dateStamp = new Date().toISOString().slice(0, 10);
-    const exportedAt = new Date().toISOString();
-    const headers = [
-      'ID',
-      'Timestamp',
-      'NSSF Member No',
-      'Member Name',
-      'Channel',
-      'Recipient',
-      'Protected Filename',
-      'Outcome',
-      'Compliance Details',
-    ];
-
-    const headerCells = headers
-      .map(
-        (h) =>
-          `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`
-      )
-      .join('');
-
-    const dataRows = filteredLogs
-      .map((l) => {
-        const textCells = [
-          l.timestamp,
-          l.memberNo,
-          l.memberName,
-          l.channel,
-          l.destination,
-          l.renamedFile,
-          l.status,
-          l.details,
-        ]
-          .map(
-            (val) =>
-              `<Cell ss:StyleID="Cell"><Data ss:Type="String">${escapeXml(
-                sanitizeSpreadsheetCell(val)
-              )}</Data></Cell>`
-          )
-          .join('');
-        return `<Row><Cell ss:StyleID="CellNum"><Data ss:Type="Number">${Number(
-          l.id
-        )}</Data></Cell>${textCells}</Row>`;
-      })
-      .join('');
-
-    const workbookXml = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="Title">
-   <Font ss:Bold="1" ss:Size="13" ss:Color="#0F2437"/>
-  </Style>
-  <Style ss:ID="Meta">
-   <Font ss:Size="10" ss:Color="#475569"/>
-  </Style>
-  <Style ss:ID="Header">
-   <Font ss:Bold="1" ss:Color="#FFFFFF"/>
-   <Interior ss:Color="#2B7A3B" ss:Pattern="Solid"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#1E6B34"/>
-   </Borders>
-  </Style>
-  <Style ss:ID="Cell">
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-  </Style>
-  <Style ss:ID="CellNum">
-   <NumberFormat ss:Format="0"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-  </Style>
- </Styles>
- <Worksheet ss:Name="NSSF Audit Logs">
-  <Table>
-   <Column ss:Width="45"/>
-   <Column ss:Width="135"/>
-   <Column ss:Width="105"/>
-   <Column ss:Width="180"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="175"/>
-   <Column ss:Width="200"/>
-   <Column ss:Width="115"/>
-   <Column ss:Width="250"/>
-   <Row>
-    <Cell ss:StyleID="Title"><Data ss:Type="String">NSSF Digital Statement Dispatch — Compliance Audit Report</Data></Cell>
-   </Row>
-   <Row>
-    <Cell ss:StyleID="Meta"><Data ss:Type="String">Generated: ${escapeXml(exportedAt)} | Channel: ${escapeXml(channelFilter)} | Outcome: ${escapeXml(statusFilter)}${query.trim() ? ` | Search: ${escapeXml(sanitizeSpreadsheetCell(query.trim()))}` : ''} | Records: ${filteredLogs.length}</Data></Cell>
-   </Row>
-   <Row/>
-   <Row>${headerCells}</Row>
-   ${dataRows}
-  </Table>
- </Worksheet>
-</Workbook>`;
-
-    const blob = new Blob([workbookXml], { type: 'application/vnd.ms-excel;charset=utf-8' });
-    triggerDownload(blob, `NSSF_Compliance_Audit_${dateStamp}.xls`);
+    const blob = buildAuditExcelBlob(filteredLogs, appName, {
+      channel: channelFilter,
+      status: statusFilter,
+      query,
+    });
+    triggerBlobDownload(blob, `NSSF_Compliance_Audit_${dateStamp}.xls`);
     toast.success(
       'MS-Excel workbook exported',
       `${filteredLogs.length} compliance record(s) downloaded as .xls.`
@@ -286,128 +126,102 @@ export function AuditLogsView({
 
   return (
     <div className="py-4 sm:py-8 space-y-6">
-      <div>
-        <button
-          type="button"
-          onClick={onBackToSettings}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Back to Settings</span>
-        </button>
-      </div>
+      <BackButton label="Back to Settings" onClick={() => navigateTo(ROUTES.SETTINGS)} />
 
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <div className="text-[11px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
-            NSSF DIGITAL STATEMENT DISPATCH
-          </div>
-          <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0F2437] tracking-tight mt-1">
-            AUDIT LOGS
-          </h1>
-          <p className="text-sm text-slate-600 mt-1">
-            Persistent SQLite record of every statement validation, encryption, and member dispatch attempt.
-          </p>
-        </div>
+      <PageHeader
+        title="AUDIT LOGS"
+        subtitle="Persistent SQLite record of every statement validation, encryption, and member dispatch attempt."
+        actions={
+          <>
+            <ActionButton variant="outline" onClick={loadLogs}>
+              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Refresh</span>
+            </ActionButton>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <motion.button
-            type="button"
-            whileHover={{ y: -1 }}
-            whileTap={{ scale: 0.98 }}
-            transition={{ duration: 0.14, ease: SMOOTH_EASE }}
-            onClick={loadLogs}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 cursor-pointer whitespace-nowrap"
-          >
-            <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Refresh</span>
-          </motion.button>
+            <div ref={exportMenuRef} className="relative">
+              <motion.button
+                type="button"
+                onClick={() => setExportMenuOpen((prev) => !prev)}
+                disabled={filteredLogs.length === 0}
+                aria-haspopup="menu"
+                aria-expanded={exportMenuOpen}
+                whileHover={filteredLogs.length > 0 ? { y: -1 } : undefined}
+                whileTap={filteredLogs.length > 0 ? { scale: 0.98 } : undefined}
+                transition={{ duration: 0.14, ease: SMOOTH_EASE }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-bold tracking-wider uppercase hover:bg-[#226430] disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
+              >
+                <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Export Logs</span>
+                <ChevronDown
+                  className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                    exportMenuOpen ? 'rotate-180' : ''
+                  }`}
+                  aria-hidden="true"
+                />
+              </motion.button>
 
-          <div ref={exportMenuRef} className="relative">
-            <motion.button
-              type="button"
-              onClick={() => setExportMenuOpen((prev) => !prev)}
-              disabled={filteredLogs.length === 0}
-              aria-haspopup="menu"
-              aria-expanded={exportMenuOpen}
-              whileHover={filteredLogs.length > 0 ? { y: -1 } : undefined}
-              whileTap={filteredLogs.length > 0 ? { scale: 0.98 } : undefined}
-              transition={{ duration: 0.14, ease: SMOOTH_EASE }}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-bold tracking-wider uppercase hover:bg-[#226430] disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
-            >
-              <Download className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Export Logs</span>
-              <ChevronDown
-                className={`w-3.5 h-3.5 transition-transform duration-150 ${
-                  exportMenuOpen ? 'rotate-180' : ''
-                }`}
-                aria-hidden="true"
-              />
-            </motion.button>
-
-            <AnimatePresence>
-              {exportMenuOpen && filteredLogs.length > 0 && (
-                <motion.div
-                  role="menu"
-                  aria-label="Choose audit log export format"
-                  initial={{ opacity: 0, y: 6, scale: 0.97 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 4, scale: 0.97 }}
-                  transition={{ duration: 0.15, ease: SMOOTH_EASE }}
-                  style={{ transformOrigin: 'top right' }}
-                  className="absolute right-0 mt-2 w-60 rounded-lg border border-slate-200 bg-white shadow-[0_12px_32px_rgba(15,36,55,0.14)] py-1.5 z-30"
-                >
-                  <div className="px-3.5 py-1.5 text-[10px] font-bold tracking-[0.14em] uppercase text-slate-400 border-b border-slate-100">
-                    Compliance Format ({filteredLogs.length})
-                  </div>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={exportCsv}
-                    className="w-full px-3.5 py-2.5 text-left flex items-start gap-2.5 hover:bg-emerald-50/70 transition-colors cursor-pointer"
+              <AnimatePresence>
+                {exportMenuOpen && filteredLogs.length > 0 && (
+                  <motion.div
+                    role="menu"
+                    aria-label="Choose audit log export format"
+                    initial={{ opacity: 0, y: 6, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 4, scale: 0.97 }}
+                    transition={{ duration: 0.15, ease: SMOOTH_EASE }}
+                    style={{ transformOrigin: 'top right' }}
+                    className="absolute right-0 mt-2 w-60 rounded-lg border border-slate-200 bg-white shadow-[0_12px_32px_rgba(15,36,55,0.14)] py-1.5 z-30"
                   >
-                    <FileText className="w-4 h-4 text-[#2B7A3B] shrink-0 mt-0.5" aria-hidden="true" />
-                    <div>
-                      <div className="text-xs font-bold text-[#0F2437]">Download CSV (.csv)</div>
-                      <div className="text-[11px] text-slate-500">
-                        UTF-8 comma-separated compliance ledger
-                      </div>
+                    <div className="px-3.5 py-1.5 text-[10px] font-bold tracking-[0.14em] uppercase text-slate-400 border-b border-slate-100">
+                      Compliance Format ({filteredLogs.length})
                     </div>
-                  </button>
 
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={exportExcel}
-                    className="w-full px-3.5 py-2.5 text-left flex items-start gap-2.5 hover:bg-emerald-50/70 transition-colors cursor-pointer"
-                  >
-                    <FileSpreadsheet
-                      className="w-4 h-4 text-[#2B7A3B] shrink-0 mt-0.5"
-                      aria-hidden="true"
-                    />
-                    <div>
-                      <div className="text-xs font-bold text-[#0F2437]">
-                        Download MS-Excel (.xls)
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={exportCsv}
+                      className="w-full px-3.5 py-2.5 text-left flex items-start gap-2.5 hover:bg-emerald-50/70 transition-colors cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4 text-[#2B7A3B] shrink-0 mt-0.5" aria-hidden="true" />
+                      <div>
+                        <div className="text-xs font-bold text-[#0F2437]">Download CSV (.csv)</div>
+                        <div className="text-[11px] text-slate-500">
+                          UTF-8 comma-separated compliance ledger
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-500">
-                        Formatted spreadsheet workbook report
+                    </button>
+
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={exportExcel}
+                      className="w-full px-3.5 py-2.5 text-left flex items-start gap-2.5 hover:bg-emerald-50/70 transition-colors cursor-pointer"
+                    >
+                      <FileSpreadsheet
+                        className="w-4 h-4 text-[#2B7A3B] shrink-0 mt-0.5"
+                        aria-hidden="true"
+                      />
+                      <div>
+                        <div className="text-xs font-bold text-[#0F2437]">
+                          Download MS-Excel (.xls)
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          Formatted spreadsheet workbook report
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-      </div>
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </>
+        }
+      />
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        {/* Search & Filter Toolbar (hidden when there is no audit data) */}
         {!loading && logs.length > 0 && (
           <div className="p-4 border-b border-slate-200 space-y-3 bg-slate-50/40">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-              {/* Member Number / Keyword Search Bar */}
               <div className="relative flex-1 max-w-md">
                 <Search
                   className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -433,7 +247,6 @@ export function AuditLogsView({
                 )}
               </div>
 
-              {/* Transaction Type & Outcome Filter Controls */}
               <div className="flex flex-wrap items-center gap-2.5">
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-semibold text-slate-600 inline-flex items-center gap-1 whitespace-nowrap">
@@ -512,7 +325,6 @@ export function AuditLogsView({
           </div>
         )}
 
-        {/* Table */}
         {loading ? (
           <div className="p-6 space-y-3">
             {[1, 2, 3].map((n) => (
@@ -534,7 +346,7 @@ export function AuditLogsView({
             {logs.length === 0 ? (
               <button
                 type="button"
-                onClick={onGoToDispatch}
+                onClick={() => navigateTo(ROUTES.STATEMENTS)}
                 className="px-4 py-2 rounded-md bg-[#006837] text-white text-xs font-semibold hover:bg-[#00542c] cursor-pointer"
               >
                 Dispatch First Statement
