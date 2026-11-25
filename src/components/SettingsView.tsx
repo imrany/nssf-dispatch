@@ -3,8 +3,10 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   ChevronUp,
+  ClipboardList,
   FileText,
   LogOut,
   Mail,
@@ -92,6 +94,7 @@ interface SettingsViewProps {
   onClearPendingNavigation: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onProceedToTab: (tab: ActiveTab) => void;
+  onOpenAuditLogs: () => void;
   onLogout: () => void;
   onAuthExpired: () => void;
 }
@@ -105,6 +108,7 @@ export function SettingsView({
   onClearPendingNavigation,
   onDirtyChange,
   onProceedToTab,
+  onOpenAuditLogs,
   onLogout,
   onAuthExpired,
 }: SettingsViewProps) {
@@ -521,6 +525,15 @@ export function SettingsView({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={onOpenAuditLogs}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#2B7A3B] bg-white text-xs font-bold tracking-wider uppercase text-[#1E6B34] hover:bg-emerald-50 cursor-pointer whitespace-nowrap transition-colors"
+          >
+            <ClipboardList className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Audit Logs</span>
+          </button>
+
           <button
             type="button"
             onClick={handleRefreshButtonClick}
@@ -1172,6 +1185,34 @@ export function SettingsView({
               </motion.div>
             )}
           </AnimatePresence>
+        </section>
+
+        {/* Compliance & Audit Logs Link Section */}
+        <section className="bg-white border border-slate-200 rounded-lg p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-md bg-emerald-50 border border-emerald-200 text-[#1E6B34] flex items-center justify-center shrink-0 mt-0.5">
+                <ClipboardList className="w-4 h-4" aria-hidden="true" />
+              </div>
+              <div>
+                <h2 className="font-display text-base font-semibold text-[#006837]">
+                  Compliance &amp; Audit Logs
+                </h2>
+                <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                  Review statement validation checks, encryption records, delivery history, and export CSV or MS-Excel compliance reports.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={onOpenAuditLogs}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded border border-[#2B7A3B] bg-white text-xs font-bold tracking-wider uppercase text-[#1E6B34] hover:bg-emerald-50 cursor-pointer whitespace-nowrap shrink-0 transition-colors"
+            >
+              <span>View Audit Logs</span>
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
         </section>
 
         <div className="flex justify-end">

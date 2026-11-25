@@ -609,8 +609,8 @@ async function startServer() {
     res.json({ ok: true, qrData, settings: getPublicSettings() });
   });
 
-  // 7. Audit Logs Endpoint
-  app.get('/api/audit', (_req, res) => {
+  // 7. Audit Logs Endpoint (accessible to authenticated Settings administrators)
+  app.get('/api/audit', requireAdminAuth, (_req, res) => {
     res.json(getAuditLogs(150));
   });
 

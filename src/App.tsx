@@ -104,9 +104,9 @@ export default function App() {
       ? receipt
         ? 'dispatch-success'
         : 'dispatch-form'
-      : activeTab === 'settings'
+      : activeTab === 'settings' || activeTab === 'audit'
         ? adminToken
-          ? 'settings-unlocked'
+          ? activeTab
           : 'settings-auth'
         : activeTab;
 
@@ -143,17 +143,22 @@ export default function App() {
                 />
               )}
 
-              {activeTab === 'audit' && (
-                <AuditLogsView onGoToDispatch={() => setActiveTab('dispatch')} />
-              )}
-
-              {activeTab === 'settings' && !adminToken && (
+              {(activeTab === 'settings' || activeTab === 'audit') && !adminToken && (
                 <SettingsAuthGate
                   onAuthenticated={(token, username, fullSettings) => {
                     setAdminToken(token);
                     setAdminUsername(username);
                     setSettings(fullSettings);
                   }}
+                />
+              )}
+
+              {activeTab === 'audit' && adminToken && (
+                <AuditLogsView
+                  adminToken={adminToken}
+                  onGoToDispatch={() => setActiveTab('dispatch')}
+                  onBackToSettings={() => setActiveTab('settings')}
+                  onAuthExpired={() => handleAdminLogout('expired')}
                 />
               )}
 
@@ -167,6 +172,7 @@ export default function App() {
                   onClearPendingNavigation={() => setPendingSettingsAction(null)}
                   onDirtyChange={setSettingsDirty}
                   onProceedToTab={navigateDirectToTab}
+                  onOpenAuditLogs={() => handleTabChange('audit')}
                   onLogout={() => handleAdminLogout('manual')}
                   onAuthExpired={() => handleAdminLogout('expired')}
                 />

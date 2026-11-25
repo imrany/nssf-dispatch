@@ -11,7 +11,6 @@ interface HeaderProps {
 export function Header({ activeTab, onTabChange, portalUrl }: HeaderProps) {
   const navItems: Array<{ id: ActiveTab; label: string }> = [
     { id: 'dispatch', label: 'Self Service' },
-    { id: 'audit', label: 'Audit Logs' },
     { id: 'settings', label: 'Settings' },
   ];
 
@@ -37,7 +36,8 @@ export function Header({ activeTab, onTabChange, portalUrl }: HeaderProps) {
 
         <nav className="flex items-center gap-7 overflow-x-auto" aria-label="Primary navigation">
           {navItems.map((item) => {
-            const isActive = activeTab === item.id;
+            const isActive =
+              activeTab === item.id || (item.id === 'settings' && activeTab === 'audit');
             return (
               <button
                 key={item.id}
