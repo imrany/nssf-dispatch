@@ -1,7 +1,11 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import crypto from 'node:crypto';
-import type { AppSettings } from './db.ts';
+import {
+  DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+  DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+  type AppSettings,
+} from './db.ts';
 import type { StatementMeta } from './pdfEngine.ts';
 
 function escapeHtml(str: string): string {
@@ -18,20 +22,61 @@ export function maskSecret(value: string): string {
   return '*'.repeat(value.length - 3) + value.slice(-3);
 }
 
+export function renderMessageTemplate(
+  template: string,
+  variables: Record<string, string>,
+  stripNewlines = false
+): string {
+  const rendered = template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, token: string) => {
+    const key = Object.keys(variables).find((k) => k.toLowerCase() === token.toLowerCase());
+    return key ? variables[key] : match;
+  });
+  return stripNewlines ? rendered.replace(/[\r\n]+/g, ' ').trim() : rendered;
+}
+
 export function buildOfficialNssfMessage(
   meta: StatementMeta,
   renamedFile: string,
   passwordMode: AppSettings['passwordMode'],
   portalUrl: string,
-  rawPassword: string
-): { subject: string; htmlBody: string; plainText: string; passwordGuide: string } {
+  rawPassword: string,
+  templates?: {
+    emailSubjectTemplate?: string;
+    whatsappMessageTemplate?: string;
+  }
+): {
+  subject: string;
+  htmlBody: string;
+  plainText: string;
+  whatsappText: string;
+  passwordGuide: string;
+} {
   const maskedPassword = maskSecret(rawPassword);
   const passwordRuleLabel =
     passwordMode === 'id_and_nssf_last4'
       ? `Your National ID Card Number followed by the last 4 characters of your NSSF Member Number (${maskedPassword})`
       : `Your National ID Card Number (${maskedPassword})`;
 
-  const subject = `Official NSSF Provisional Member Statement — ${meta.memberName} (${meta.memberNo})`;
+  const templateVars: Record<string, string> = {
+    memberName: meta.memberName,
+    memberNo: meta.memberNo,
+    period: meta.period,
+    employer: meta.employer || 'Registered Contributor',
+    standardAmount: meta.standardAmount,
+    voluntaryAmount: meta.voluntaryAmount,
+    totalAmount: meta.totalAmount,
+    renamedFile,
+    passwordGuide: passwordRuleLabel,
+    portalUrl,
+    statementDate: meta.statementDate || meta.period,
+  };
+
+  const subjectTemplate = templates?.emailSubjectTemplate?.trim() || DEFAULT_EMAIL_SUBJECT_TEMPLATE;
+  const whatsappTemplate =
+    templates?.whatsappMessageTemplate?.trim() || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE;
+
+  const subject = renderMessageTemplate(subjectTemplate, templateVars, true);
+  const whatsappText = renderMessageTemplate(whatsappTemplate, templateVars, false);
 
   const plainText = `NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA
 Member Self-Service & Statement Dispatch
@@ -130,7 +175,7 @@ Toll-Free: 0800 221 2744 | Website: ${portalUrl}`;
 </body>
 </html>`;
 
-  return { subject, htmlBody, plainText, passwordGuide: passwordRuleLabel };
+  return { subject, htmlBody, plainText, whatsappText, passwordGuide: passwordRuleLabel };
 }
 
 function buildMimeMessage(
@@ -351,7 +396,11 @@ export async function sendEmailStatement(
     renamedFile,
     cfg.passwordMode,
     cfg.portalUrl,
-    rawPassword
+    rawPassword,
+    {
+      emailSubjectTemplate: cfg.emailSubjectTemplate,
+      whatsappMessageTemplate: cfg.whatsappMessageTemplate,
+    }
   );
   const mimePayload = buildMimeMessage(
     cfg.smtpFrom || fromAddress,

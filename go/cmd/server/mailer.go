@@ -25,7 +25,20 @@ func maskSecret(val string) string {
 	return strings.Repeat("*", len(val)-3) + val[len(val)-3:]
 }
 
-func BuildOfficialNSSFMessage(meta *StatementMeta, renamedFile, passwordMode, portalURL, rawPassword string) (subject, htmlBody, plainText, passwordGuide string) {
+func RenderMessageTemplate(template string, vars map[string]string, stripNewlines bool) string {
+	result := template
+	for k, v := range vars {
+		result = strings.ReplaceAll(result, "{"+k+"}", v)
+	}
+	if stripNewlines {
+		result = strings.ReplaceAll(result, "\r", " ")
+		result = strings.ReplaceAll(result, "\n", " ")
+		result = strings.TrimSpace(result)
+	}
+	return result
+}
+
+func BuildOfficialNSSFMessage(meta *StatementMeta, renamedFile, passwordMode, portalURL, rawPassword, emailSubjectTpl, whatsappMessageTpl string) (subject, htmlBody, plainText, whatsappText, passwordGuide string) {
 	masked := maskSecret(rawPassword)
 	if passwordMode == "id_and_nssf_last4" {
 		passwordGuide = fmt.Sprintf("Your National ID Card Number followed by the last 4 characters of your NSSF Member Number (%s)", masked)
@@ -33,7 +46,25 @@ func BuildOfficialNSSFMessage(meta *StatementMeta, renamedFile, passwordMode, po
 		passwordGuide = fmt.Sprintf("Your National ID Card Number (%s)", masked)
 	}
 
-	subject = fmt.Sprintf("Official NSSF Provisional Member Statement — %s (%s)", meta.MemberName, meta.MemberNo)
+	vars := map[string]string{
+		"memberName":      meta.MemberName,
+		"memberNo":        meta.MemberNo,
+		"period":          meta.Period,
+		"employer":        defaultStr(meta.Employer, "Registered Contributor"),
+		"standardAmount":  meta.StandardAmount,
+		"voluntaryAmount": meta.VoluntaryAmount,
+		"totalAmount":     meta.TotalAmount,
+		"renamedFile":     renamedFile,
+		"passwordGuide":   passwordGuide,
+		"portalUrl":       portalURL,
+		"statementDate":   defaultStr(meta.StatementDate, meta.Period),
+	}
+
+	subjTpl := defaultStr(strings.TrimSpace(emailSubjectTpl), DefaultEmailSubjectTemplate)
+	waTpl := defaultStr(strings.TrimSpace(whatsappMessageTpl), DefaultWhatsAppMessageTemplate)
+
+	subject = RenderMessageTemplate(subjTpl, vars, true)
+	whatsappText = RenderMessageTemplate(waTpl, vars, false)
 
 	plainText = fmt.Sprintf(`NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA
 Member Self-Service & Statement Dispatch
@@ -168,7 +199,7 @@ func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, 
 		return fmt.Errorf("email dispatch is currently disabled in system settings")
 	}
 
-	subject, htmlBody, plainText, _ := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword)
+	subject, htmlBody, plainText, _, _ := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
 
 	var buf bytes.Buffer
 	mixedWriter := multipart.NewWriter(&buf)

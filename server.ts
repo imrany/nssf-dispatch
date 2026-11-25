@@ -247,12 +247,16 @@ async function startServer() {
       const renamedFile = buildRenamedFile(cfg.filenameTemplate, meta.memberNo);
       const downloadToken = storeProtectedPdf(renamedFile, encryptedPdf);
 
-      const { subject, htmlBody, plainText, passwordGuide } = buildOfficialNssfMessage(
+      const { subject, htmlBody, plainText, whatsappText, passwordGuide } = buildOfficialNssfMessage(
         meta,
         renamedFile,
         cfg.passwordMode,
         cfg.portalUrl,
-        rawPassword
+        rawPassword,
+        {
+          emailSubjectTemplate: cfg.emailSubjectTemplate,
+          whatsappMessageTemplate: cfg.whatsappMessageTemplate,
+        }
       );
 
       // Step 3: Dispatch via Email and/or WhatsApp
@@ -369,6 +373,7 @@ async function startServer() {
           subject,
           htmlBody,
           plainText,
+          whatsappText,
         },
       });
     } catch (err) {

@@ -135,7 +135,7 @@ func main() {
 
 		renamedFile := buildRenamedFile(cfg.FilenameTemplate, meta.MemberNo)
 		downloadToken := storeProtectedPDF(renamedFile, encryptedPDF)
-		subject, htmlBody, plainText, passwordGuide := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword)
+		subject, htmlBody, plainText, whatsappText, passwordGuide := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
 
 		var delivered []string
 		if channel == "email" || channel == "both" {
@@ -183,9 +183,10 @@ func main() {
 			"passwordGuide":    passwordGuide,
 			"downloadUrl":      "/api/download/" + downloadToken,
 			"emailPreview": map[string]string{
-				"subject":   subject,
-				"htmlBody":  htmlBody,
-				"plainText": plainText,
+				"subject":      subject,
+				"htmlBody":     htmlBody,
+				"plainText":    plainText,
+				"whatsappText": whatsappText,
 			},
 		})
 	})

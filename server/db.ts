@@ -19,7 +19,25 @@ export interface AppSettings {
   passwordMode: 'id_card' | 'id_and_nssf_last4';
   portalUrl: string;
   previewBeforeDispatch: boolean;
+  emailSubjectTemplate: string;
+  whatsappMessageTemplate: string;
 }
+
+export const DEFAULT_EMAIL_SUBJECT_TEMPLATE =
+  'Official NSSF Provisional Member Statement — {memberName} ({memberNo})';
+
+export const DEFAULT_WHATSAPP_MESSAGE_TEMPLATE = `*NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA*
+Hello {memberName},
+
+Please find attached your official NSSF Provisional Member Statement ({renamedFile}) for {period}.
+
+*Member No:* {memberNo}
+*Total Fund Balance:* KES {totalAmount}
+
+*How to Open:*
+Enter {passwordGuide} when prompted for the PDF password.
+
+Self-Service: USSD *303# or {portalUrl}`;
 
 export interface WhatsAppSessionRecord {
   sessionCode: string;
@@ -98,6 +116,8 @@ export function initDb(): void {
     passwordMode: 'id_card',
     portalUrl: 'https://nssfdigital.enssf.co.ke',
     previewBeforeDispatch: 'true',
+    emailSubjectTemplate: DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+    whatsappMessageTemplate: DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
   };
 
   const insertDefault = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -131,6 +151,8 @@ export function getRawSettings(): AppSettings {
     passwordMode: map.passwordMode === 'id_and_nssf_last4' ? 'id_and_nssf_last4' : 'id_card',
     portalUrl: map.portalUrl || 'https://nssfdigital.enssf.co.ke',
     previewBeforeDispatch: map.previewBeforeDispatch !== 'false',
+    emailSubjectTemplate: map.emailSubjectTemplate || DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+    whatsappMessageTemplate: map.whatsappMessageTemplate || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
   };
 }
 
@@ -172,6 +194,16 @@ export function saveSettings(input: Partial<AppSettings> & { clearSmtpPass?: boo
     ['passwordMode', input.passwordMode ?? current.passwordMode],
     ['portalUrl', (input.portalUrl ?? current.portalUrl).trim()],
     ['previewBeforeDispatch', String(input.previewBeforeDispatch ?? current.previewBeforeDispatch)],
+    [
+      'emailSubjectTemplate',
+      (input.emailSubjectTemplate ?? current.emailSubjectTemplate).trim() ||
+        DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+    ],
+    [
+      'whatsappMessageTemplate',
+      (input.whatsappMessageTemplate ?? current.whatsappMessageTemplate).trim() ||
+        DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+    ],
   ];
 
   const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');

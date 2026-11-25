@@ -174,11 +174,11 @@ func SendWhatsAppStatement(cfg AppSettings, phone string, meta *StatementMeta, r
 		return fmt.Errorf("invalid WhatsApp gateway URL")
 	}
 
-	_, _, plainText, _ := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword)
+	_, _, _, whatsappText, _ := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
 	payload, _ := json.Marshal(map[string]string{
 		"phone":          phone,
 		"filename":       renamedFile,
-		"caption":        plainText,
+		"caption":        whatsappText,
 		"documentBase64": base64.StdEncoding.EncodeToString(encryptedPDF),
 	})
 

@@ -178,7 +178,7 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
                 transition={{ duration: 0.14 }}
                 className="p-6 text-xs font-mono text-[#0F2437] whitespace-pre-wrap leading-relaxed bg-slate-50 max-h-[540px] overflow-y-auto"
               >
-                {receipt.emailPreview.plainText}
+                {receipt.emailPreview.whatsappText || receipt.emailPreview.plainText}
               </motion.pre>
             )}
           </AnimatePresence>

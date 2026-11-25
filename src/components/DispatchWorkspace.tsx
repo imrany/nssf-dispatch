@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Eye,
   FileText,
+  Keyboard,
   Pencil,
   RefreshCw,
   UploadCloud,
@@ -49,6 +50,17 @@ export function DispatchWorkspace({
   const [dragOver, setDragOver] = useState(false);
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const shortcutHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
+
+  const focusFieldById = (id: string) => {
+    window.setTimeout(() => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el) {
+        el.focus();
+        el.select?.();
+      }
+    }, 80);
+  };
 
   useEffect(() => {
     setErrorMsg('');
@@ -68,6 +80,12 @@ export function DispatchWorkspace({
     };
   }, [step]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => shortcutHandlerRef.current(e);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   const noChannelsEnabled = !settings.emailEnabled && !settings.whatsappEnabled;
 
   const handleSelectChannel = (chosen: DispatchChannel) => {
@@ -75,6 +93,7 @@ export function DispatchWorkspace({
     setHoveredCard(null);
     setErrorMsg('');
     setStep('validate');
+    focusFieldById('nssf-member-no');
   };
 
   const handleValidateStep = async (e: React.FormEvent) => {
@@ -125,8 +144,9 @@ export function DispatchWorkspace({
     }
   };
 
-  const executeDispatch = async () => {
+  const executeDispatch = async (overrideChannel?: DispatchChannel) => {
     setErrorMsg('');
+    const activeChannel = overrideChannel ?? channel;
 
     if (!file || !validatedMeta) {
       setPreviewOpen(false);
@@ -137,7 +157,7 @@ export function DispatchWorkspace({
     setSubmitting(true);
     const formData = new FormData();
     formData.append('memberNo', memberNo.trim());
-    formData.append('channel', channel);
+    formData.append('channel', activeChannel);
     formData.append('email', email.trim());
     formData.append('whatsapp', whatsapp.trim());
     formData.append('statement', file);
@@ -169,6 +189,111 @@ export function DispatchWorkspace({
   const handleDispatch = async (e: React.FormEvent) => {
     e.preventDefault();
     await executeDispatch();
+  };
+
+  shortcutHandlerRef.current = (e: KeyboardEvent) => {
+    const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+    if (!mod) return;
+
+    const key = e.key.toLowerCase();
+    if (key !== 'e' && key !== 'w' && key !== 'b' && key !== 'p') return;
+
+    if (key === 'p') {
+      if (step === 'confirm' && settings.previewBeforeDispatch) {
+        e.preventDefault();
+        setPreviewOpen((prev) => !prev);
+      }
+      return;
+    }
+
+    e.preventDefault();
+    if (validating || submitting) return;
+
+    const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    const isWhatsappValid = whatsapp.replace(/[^\d]/g, '').length >= 9;
+
+    if (key === 'e') {
+      if (!settings.emailEnabled) {
+        toast.warning('Email channel disabled', 'Enable Email in System Settings to use Ctrl+E.');
+        return;
+      }
+      if (step === 'select') {
+        handleSelectChannel('email');
+        toast.success('Email Statement selected', 'Shortcut Ctrl+E: enter Member Number and attach PDF.');
+      } else if (step === 'validate') {
+        setChannel('email');
+        if (!memberNo.trim()) focusFieldById('nssf-member-no');
+        toast.success('Email channel active', 'Shortcut Ctrl+E: statement will be sent via Email.');
+      } else if (step === 'confirm') {
+        setChannel('email');
+        if (isEmailValid) {
+          void executeDispatch('email');
+        } else {
+          focusFieldById('member-email');
+          toast.warning(
+            'Enter member email',
+            'Channel set to Email Only. Enter recipient email and press Ctrl+E again to send.'
+          );
+        }
+      }
+      return;
+    }
+
+    if (key === 'w') {
+      if (!settings.whatsappEnabled) {
+        toast.warning('WhatsApp channel disabled', 'Enable WhatsApp in System Settings to use Ctrl+W.');
+        return;
+      }
+      if (step === 'select') {
+        handleSelectChannel('whatsapp');
+        toast.success('WhatsApp Statement selected', 'Shortcut Ctrl+W: enter Member Number and attach PDF.');
+      } else if (step === 'validate') {
+        setChannel('whatsapp');
+        if (!memberNo.trim()) focusFieldById('nssf-member-no');
+        toast.success('WhatsApp channel active', 'Shortcut Ctrl+W: statement will be sent via WhatsApp.');
+      } else if (step === 'confirm') {
+        setChannel('whatsapp');
+        if (isWhatsappValid) {
+          void executeDispatch('whatsapp');
+        } else {
+          focusFieldById('member-whatsapp');
+          toast.warning(
+            'Enter WhatsApp number',
+            'Channel set to WhatsApp Only. Enter phone number and press Ctrl+W again to send.'
+          );
+        }
+      }
+      return;
+    }
+
+    if (key === 'b') {
+      if (!settings.emailEnabled || !settings.whatsappEnabled) {
+        toast.warning(
+          'Dual channel unavailable',
+          'Enable both Email and WhatsApp in System Settings to use Ctrl+B.'
+        );
+        return;
+      }
+      if (step === 'select') {
+        handleSelectChannel('both');
+        toast.success('Dual dispatch selected', 'Shortcut Ctrl+B: enter Member Number and attach PDF.');
+      } else if (step === 'validate') {
+        setChannel('both');
+        if (!memberNo.trim()) focusFieldById('nssf-member-no');
+        toast.success('Email & WhatsApp active', 'Shortcut Ctrl+B: statement will be sent via both channels.');
+      } else if (step === 'confirm') {
+        setChannel('both');
+        if (isEmailValid && isWhatsappValid) {
+          void executeDispatch('both');
+        } else {
+          focusFieldById(!isEmailValid ? 'member-email' : 'member-whatsapp');
+          toast.warning(
+            'Complete recipient details',
+            'Enter both Email and WhatsApp number, then press Ctrl+B again to send.'
+          );
+        }
+      }
+    }
   };
 
   const acceptSelectedFile = (candidate: File | null | undefined) => {
@@ -346,6 +471,17 @@ export function DispatchWorkspace({
                       ? 'Validate PDF, protect with ID Card No & send via NSSF SMTP'
                       : 'Email channel disabled in System Settings'}
                   </span>
+                  {settings.emailEnabled && (
+                    <kbd
+                      className={`inline-block mt-3 px-2 py-0.5 rounded text-[11px] font-mono border transition-colors duration-200 ${
+                        emailHovered
+                          ? 'bg-white/15 border-white/30 text-white'
+                          : 'bg-slate-50 border-slate-200 text-slate-500'
+                      }`}
+                    >
+                      Ctrl+E
+                    </kbd>
+                  )}
                 </div>
               </motion.button>
 
@@ -391,6 +527,17 @@ export function DispatchWorkspace({
                       ? 'Validate PDF, protect with ID Card No & send via WhatsApp'
                       : 'WhatsApp channel disabled in System Settings'}
                   </span>
+                  {settings.whatsappEnabled && (
+                    <kbd
+                      className={`inline-block mt-3 px-2 py-0.5 rounded text-[11px] font-mono border transition-colors duration-200 ${
+                        whatsappHovered
+                          ? 'bg-white/15 border-white/30 text-white'
+                          : 'bg-slate-50 border-slate-200 text-slate-500'
+                      }`}
+                    >
+                      Ctrl+W
+                    </kbd>
+                  )}
                 </div>
               </motion.button>
             </div>
@@ -421,11 +568,20 @@ export function DispatchWorkspace({
                   className="absolute inset-0 bg-[#2B7A3B] pointer-events-none"
                 />
                 <span
-                  className={`relative z-10 transition-colors duration-200 ${
+                  className={`relative z-10 inline-flex items-center justify-center gap-2.5 transition-colors duration-200 ${
                     bothHovered ? 'text-white' : 'text-[#0F2437]'
                   }`}
                 >
-                  Dispatch via Both Email &amp; WhatsApp
+                  <span>Dispatch via Both Email &amp; WhatsApp</span>
+                  <kbd
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors duration-200 ${
+                      bothHovered
+                        ? 'bg-white/15 border-white/30 text-white'
+                        : 'bg-slate-50 border-slate-200 text-slate-500'
+                    }`}
+                  >
+                    Ctrl+B
+                  </kbd>
                 </span>
               </motion.button>
             )}
@@ -716,11 +872,22 @@ export function DispatchWorkspace({
             {/* Channel switcher if user wants to change channel */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
-                { id: 'email' as const, label: 'Email Only', enabled: settings.emailEnabled },
-                { id: 'whatsapp' as const, label: 'WhatsApp Only', enabled: settings.whatsappEnabled },
+                {
+                  id: 'email' as const,
+                  label: 'Email Only',
+                  shortcut: 'Ctrl+E',
+                  enabled: settings.emailEnabled,
+                },
+                {
+                  id: 'whatsapp' as const,
+                  label: 'WhatsApp Only',
+                  shortcut: 'Ctrl+W',
+                  enabled: settings.whatsappEnabled,
+                },
                 {
                   id: 'both' as const,
                   label: 'Email & WhatsApp',
+                  shortcut: 'Ctrl+B',
                   enabled: settings.emailEnabled && settings.whatsappEnabled,
                 },
               ].map((opt) => (
@@ -732,13 +899,22 @@ export function DispatchWorkspace({
                   whileTap={opt.enabled ? { scale: 0.98 } : undefined}
                   transition={{ duration: 0.14, ease: SMOOTH_EASE }}
                   onClick={() => setChannel(opt.id)}
-                  className={`h-11 rounded text-xs font-bold uppercase tracking-wider border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                  className={`h-11 rounded px-3 text-xs font-bold uppercase tracking-wider border inline-flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                     channel === opt.id
                       ? 'bg-[#2B7A3B] border-[#2B7A3B] text-white'
                       : 'bg-white border-[#D1D9E0] text-[#0F2437] hover:border-[#2B7A3B]'
                   }`}
                 >
-                  {opt.label}
+                  <span>{opt.label}</span>
+                  <kbd
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-normal normal-case tracking-normal border ${
+                      channel === opt.id
+                        ? 'bg-white/15 border-white/30 text-white'
+                        : 'bg-slate-50 border-slate-200 text-slate-500'
+                    }`}
+                  >
+                    {opt.shortcut}
+                  </kbd>
                 </motion.button>
               ))}
             </div>
@@ -809,6 +985,9 @@ export function DispatchWorkspace({
                 >
                   <Eye className="w-4 h-4" aria-hidden="true" />
                   <span>PREVIEW PARSED DETAILS &amp; PDF</span>
+                  <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono font-normal normal-case tracking-normal border border-emerald-200 bg-emerald-50 text-[#1E6B34]">
+                    Ctrl+P
+                  </kbd>
                 </motion.button>
               )}
 
@@ -840,6 +1019,40 @@ export function DispatchWorkspace({
         )}
       </AnimatePresence>
 
+      {/* Global shortcut legend */}
+      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pt-2 text-[11px] text-slate-500">
+        <span className="inline-flex items-center gap-1.5 font-medium text-slate-600">
+          <Keyboard className="w-3.5 h-3.5 text-[#2B7A3B]" aria-hidden="true" />
+          <span>Shortcuts:</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <kbd className="px-1.5 py-0.5 rounded border border-slate-200 bg-white font-mono text-[10px] text-[#0F2437]">
+            Ctrl+E
+          </kbd>
+          <span>Send Email</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <kbd className="px-1.5 py-0.5 rounded border border-slate-200 bg-white font-mono text-[10px] text-[#0F2437]">
+            Ctrl+W
+          </kbd>
+          <span>Send WhatsApp</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <kbd className="px-1.5 py-0.5 rounded border border-slate-200 bg-white font-mono text-[10px] text-[#0F2437]">
+            Ctrl+B
+          </kbd>
+          <span>Both</span>
+        </span>
+        {settings.previewBeforeDispatch && (
+          <span className="inline-flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded border border-slate-200 bg-white font-mono text-[10px] text-[#0F2437]">
+              Ctrl+P
+            </kbd>
+            <span>Preview PDF</span>
+          </span>
+        )}
+      </div>
+
       {settings.previewBeforeDispatch && (
         <StatementPreviewModal
           open={previewOpen}
@@ -852,7 +1065,7 @@ export function DispatchWorkspace({
           passwordMode={settings.passwordMode}
           submitting={submitting}
           onClose={() => setPreviewOpen(false)}
-          onConfirmDispatch={executeDispatch}
+          onConfirmDispatch={() => executeDispatch()}
         />
       )}
     </div>

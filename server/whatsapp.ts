@@ -431,12 +431,16 @@ export async function sendWhatsAppStatement(
     throw new Error('Please enter a valid member WhatsApp phone number (e.g. 254712345678).');
   }
 
-  const { plainText } = buildOfficialNssfMessage(
+  const { whatsappText } = buildOfficialNssfMessage(
     meta,
     renamedFile,
     cfg.passwordMode,
     cfg.portalUrl,
-    rawPassword
+    rawPassword,
+    {
+      emailSubjectTemplate: cfg.emailSubjectTemplate,
+      whatsappMessageTemplate: cfg.whatsappMessageTemplate,
+    }
   );
 
   const bridgeUrl = validateBridgeUrl(cfg.whatsappBridgeUrl);
@@ -451,7 +455,7 @@ export async function sendWhatsAppStatement(
       body: JSON.stringify({
         phone: normalizedPhone,
         filename: renamedFile,
-        caption: plainText,
+        caption: whatsappText,
         documentBase64: encryptedPdf.toString('base64'),
       }),
     });

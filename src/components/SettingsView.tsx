@@ -1,12 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  FileText,
   Mail,
   QrCode,
   RefreshCw,
+  RotateCcw,
   Save,
   Server,
   Smartphone,
@@ -15,6 +17,62 @@ import {
 } from 'lucide-react';
 import type { ActiveTab, AppSettings, WhatsAppQrData } from '../types';
 import { toast } from './Toaster';
+
+const DEFAULT_EMAIL_SUBJECT_TEMPLATE =
+  'Official NSSF Provisional Member Statement — {memberName} ({memberNo})';
+
+const DEFAULT_WHATSAPP_MESSAGE_TEMPLATE = `*NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA*
+Hello {memberName},
+
+Please find attached your official NSSF Provisional Member Statement ({renamedFile}) for {period}.
+
+*Member No:* {memberNo}
+*Total Fund Balance:* KES {totalAmount}
+
+*How to Open:*
+Enter {passwordGuide} when prompted for the PDF password.
+
+Self-Service: USSD *303# or {portalUrl}`;
+
+const TEMPLATE_PLACEHOLDERS: Array<{ token: string; label: string }> = [
+  { token: '{memberName}', label: 'Member Name' },
+  { token: '{memberNo}', label: 'Member No' },
+  { token: '{period}', label: 'Period' },
+  { token: '{totalAmount}', label: 'Total Balance' },
+  { token: '{standardAmount}', label: 'Standard Amt' },
+  { token: '{voluntaryAmount}', label: 'Voluntary Amt' },
+  { token: '{employer}', label: 'Employer' },
+  { token: '{renamedFile}', label: 'PDF Filename' },
+  { token: '{passwordGuide}', label: 'Password Guide' },
+  { token: '{portalUrl}', label: 'Portal URL' },
+  { token: '{statementDate}', label: 'Statement Date' },
+];
+
+const SAMPLE_TEMPLATE_VARS: Record<string, string> = {
+  memberName: 'JANE WANJIKU KAMAU',
+  memberNo: '102938475',
+  period: 'Jan 2024 - Dec 2024',
+  employer: 'KENYA COMMERCIAL BANK LTD',
+  standardAmount: '1,240,000.00',
+  voluntaryAmount: '242,500.00',
+  totalAmount: '1,482,500.00',
+  renamedFile: 'NSSF_Statement_102938475_20261125.pdf',
+  passwordGuide: 'Your National ID Card Number (*****678)',
+  portalUrl: 'https://nssfdigital.enssf.co.ke',
+  statementDate: '25 Nov 2026',
+};
+
+function renderPreviewTemplate(template: string, portalUrl: string, stripNewlines = false): string {
+  const vars: Record<string, string> = {
+    ...SAMPLE_TEMPLATE_VARS,
+    portalUrl: portalUrl || SAMPLE_TEMPLATE_VARS.portalUrl,
+  };
+  const rendered = template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, token: string) => {
+    const key = Object.keys(vars).find((k) => k.toLowerCase() === token.toLowerCase());
+    return key ? vars[key] : match;
+  });
+  return stripNewlines ? rendered.replace(/[\r\n]+/g, ' ').trim() : rendered;
+}
 
 export type PendingSettingsAction =
   | { type: 'tab'; targetTab: ActiveTab }
@@ -52,6 +110,10 @@ export function SettingsView({
   const [loadingQr, setLoadingQr] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
 
+  const [activeTemplateField, setActiveTemplateField] = useState<'subject' | 'whatsapp'>('whatsapp');
+  const subjectInputRef = useRef<HTMLInputElement>(null);
+  const whatsappTextareaRef = useRef<HTMLTextAreaElement>(null);
+
   useEffect(() => {
     setForm({ ...settings, smtpPass: '' });
   }, [settings]);
@@ -72,7 +134,9 @@ export function SettingsView({
       form.filenameTemplate !== settings.filenameTemplate ||
       form.passwordMode !== settings.passwordMode ||
       form.portalUrl !== settings.portalUrl ||
-      form.previewBeforeDispatch !== settings.previewBeforeDispatch
+      form.previewBeforeDispatch !== settings.previewBeforeDispatch ||
+      form.emailSubjectTemplate !== settings.emailSubjectTemplate ||
+      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate
     );
   }, [form, settings]);
 
@@ -332,6 +396,36 @@ export function SettingsView({
       toast.error('Network error', 'Unable to reach server to remove paired WhatsApp device.');
     } finally {
       setUnlinking(false);
+    }
+  };
+
+  const insertPlaceholder = (token: string) => {
+    if (activeTemplateField === 'subject') {
+      const input = subjectInputRef.current;
+      const current = form.emailSubjectTemplate;
+      const start = input?.selectionStart ?? current.length;
+      const end = input?.selectionEnd ?? current.length;
+      const next = current.slice(0, start) + token + current.slice(end);
+      setForm((prev) => ({ ...prev, emailSubjectTemplate: next }));
+      window.requestAnimationFrame(() => {
+        if (input) {
+          input.focus();
+          input.setSelectionRange(start + token.length, start + token.length);
+        }
+      });
+    } else {
+      const textarea = whatsappTextareaRef.current;
+      const current = form.whatsappMessageTemplate;
+      const start = textarea?.selectionStart ?? current.length;
+      const end = textarea?.selectionEnd ?? current.length;
+      const next = current.slice(0, start) + token + current.slice(end);
+      setForm((prev) => ({ ...prev, whatsappMessageTemplate: next }));
+      window.requestAnimationFrame(() => {
+        if (textarea) {
+          textarea.focus();
+          textarea.setSelectionRange(start + token.length, start + token.length);
+        }
+      });
     }
   };
 
@@ -796,6 +890,136 @@ export function SettingsView({
               <code>go/packaging/windows/app.rc</code>, and stores settings/logs in SQLite.
             </div>
             <span className="font-mono text-[11px] text-slate-500 shrink-0">go/build.sh</span>
+          </div>
+        </section>
+
+        {/* Templates Section: Email Subject & WhatsApp Message Body */}
+        <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-[#006837]" aria-hidden="true" />
+              <h2 className="font-display text-base font-semibold text-[#006837]">
+                Templates
+              </h2>
+            </div>
+            <span className="text-xs text-slate-500">
+              Click any placeholder chip to insert into the{' '}
+              <strong className="text-[#0F2437]">
+                {activeTemplateField === 'subject' ? 'Email Subject Line' : 'WhatsApp Message Body'}
+              </strong>
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {TEMPLATE_PLACEHOLDERS.map((item) => (
+              <button
+                key={item.token}
+                type="button"
+                onClick={() => insertPlaceholder(item.token)}
+                title={`Insert ${item.token} (${item.label})`}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-slate-200 bg-slate-50 hover:border-[#2B7A3B] hover:bg-emerald-50 text-xs transition-colors cursor-pointer"
+              >
+                <code className="font-mono font-semibold text-[#1E6B34]">{item.token}</code>
+                <span className="text-[11px] text-slate-500">{item.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="space-y-5">
+            {/* Email Subject Line Template */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="email-subject-tpl"
+                  className="block text-xs font-semibold text-slate-800"
+                >
+                  Email Subject Line Template
+                </label>
+                {form.emailSubjectTemplate !== DEFAULT_EMAIL_SUBJECT_TEMPLATE && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm({ ...form, emailSubjectTemplate: DEFAULT_EMAIL_SUBJECT_TEMPLATE })
+                    }
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#2B7A3B] cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                    <span>Reset Default</span>
+                  </button>
+                )}
+              </div>
+              <input
+                ref={subjectInputRef}
+                id="email-subject-tpl"
+                value={form.emailSubjectTemplate}
+                onFocus={() => setActiveTemplateField('subject')}
+                onChange={(e) => setForm({ ...form, emailSubjectTemplate: e.target.value })}
+                placeholder={DEFAULT_EMAIL_SUBJECT_TEMPLATE}
+                className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 text-sm font-mono text-[#0F2437] focus:outline-none focus:border-[#006837]"
+              />
+              <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-xs text-slate-600">
+                <span className="font-semibold text-slate-700">Subject Preview: </span>
+                <span className="text-[#0F2437]">
+                  {renderPreviewTemplate(
+                    form.emailSubjectTemplate.trim() || DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+                    form.portalUrl,
+                    true
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* WhatsApp Message Body Template */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="whatsapp-body-tpl"
+                    className="block text-xs font-semibold text-slate-800"
+                  >
+                    WhatsApp Message Body Template
+                  </label>
+                  {form.whatsappMessageTemplate !== DEFAULT_WHATSAPP_MESSAGE_TEMPLATE && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setForm({
+                          ...form,
+                          whatsappMessageTemplate: DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+                        })
+                      }
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#2B7A3B] cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                      <span>Reset Default</span>
+                    </button>
+                  )}
+                </div>
+                <textarea
+                  ref={whatsappTextareaRef}
+                  id="whatsapp-body-tpl"
+                  rows={8}
+                  value={form.whatsappMessageTemplate}
+                  onFocus={() => setActiveTemplateField('whatsapp')}
+                  onChange={(e) => setForm({ ...form, whatsappMessageTemplate: e.target.value })}
+                  placeholder={DEFAULT_WHATSAPP_MESSAGE_TEMPLATE}
+                  className="w-full px-3.5 py-2.5 rounded-md border border-slate-300 text-xs font-mono leading-relaxed text-[#0F2437] focus:outline-none focus:border-[#006837]"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-slate-800">
+                  WhatsApp Caption Preview (Sample Member)
+                </div>
+                <pre className="p-3.5 rounded-md border border-emerald-200 bg-emerald-50/40 text-xs font-sans text-[#0F2437] whitespace-pre-wrap leading-relaxed min-h-[196px]">
+                  {renderPreviewTemplate(
+                    form.whatsappMessageTemplate.trim() || DEFAULT_WHATSAPP_MESSAGE_TEMPLATE,
+                    form.portalUrl,
+                    false
+                  )}
+                </pre>
+              </div>
+            </div>
           </div>
         </section>
 

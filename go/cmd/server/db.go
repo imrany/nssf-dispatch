@@ -22,11 +22,18 @@ type AppSettings struct {
 	WhatsAppBridgeURL  string `json:"whatsappBridgeUrl"`
 	WhatsAppPaired     bool   `json:"whatsappPaired"`
 	WhatsAppDeviceName string `json:"whatsappDeviceName"`
-	FilenameTemplate      string `json:"filenameTemplate"`
-	PasswordMode          string `json:"passwordMode"`
-	PortalURL             string `json:"portalUrl"`
-	PreviewBeforeDispatch bool   `json:"previewBeforeDispatch"`
+	FilenameTemplate        string `json:"filenameTemplate"`
+	PasswordMode            string `json:"passwordMode"`
+	PortalURL               string `json:"portalUrl"`
+	PreviewBeforeDispatch   bool   `json:"previewBeforeDispatch"`
+	EmailSubjectTemplate    string `json:"emailSubjectTemplate"`
+	WhatsAppMessageTemplate string `json:"whatsappMessageTemplate"`
 }
+
+const (
+	DefaultEmailSubjectTemplate    = "Official NSSF Provisional Member Statement — {memberName} ({memberNo})"
+	DefaultWhatsAppMessageTemplate = "*NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA*\nHello {memberName},\n\nPlease find attached your official NSSF Provisional Member Statement ({renamedFile}) for {period}.\n\n*Member No:* {memberNo}\n*Total Fund Balance:* KES {totalAmount}\n\n*How to Open:*\nEnter {passwordGuide} when prompted for the PDF password.\n\nSelf-Service: USSD *303# or {portalUrl}"
+)
 
 type WhatsAppSessionRecord struct {
 	SessionCode     string `json:"sessionCode"`
@@ -114,7 +121,9 @@ func InitDB() error {
 		('filenameTemplate', 'NSSF_Statement_{memberNo}_{date}.pdf'),
 		('passwordMode', 'id_card'),
 		('portalUrl', 'https://nssfdigital.enssf.co.ke'),
-		('previewBeforeDispatch', 'true');
+		('previewBeforeDispatch', 'true'),
+		('emailSubjectTemplate', ` + sqlLit(DefaultEmailSubjectTemplate) + `),
+		('whatsappMessageTemplate', ` + sqlLit(DefaultWhatsAppMessageTemplate) + `);
 	`
 	_, err := runSQL(schema)
 	return err
@@ -154,8 +163,10 @@ func GetRawSettings() (AppSettings, error) {
 		WhatsAppDeviceName: defaultStr(m["whatsappDeviceName"], "NSSF Service Desk Terminal 01"),
 		FilenameTemplate:      defaultStr(m["filenameTemplate"], "NSSF_Statement_{memberNo}_{date}.pdf"),
 		PasswordMode:          defaultStr(m["passwordMode"], "id_card"),
-		PortalURL:             defaultStr(m["portalUrl"], "https://nssfdigital.enssf.co.ke"),
-		PreviewBeforeDispatch: m["previewBeforeDispatch"] != "false",
+		PortalURL:               defaultStr(m["portalUrl"], "https://nssfdigital.enssf.co.ke"),
+		PreviewBeforeDispatch:   m["previewBeforeDispatch"] != "false",
+		EmailSubjectTemplate:    defaultStr(m["emailSubjectTemplate"], DefaultEmailSubjectTemplate),
+		WhatsAppMessageTemplate: defaultStr(m["whatsappMessageTemplate"], DefaultWhatsAppMessageTemplate),
 	}, nil
 }
 
@@ -192,8 +203,10 @@ func SaveSettings(input AppSettings) error {
 		"whatsappDeviceName": strings.TrimSpace(input.WhatsAppDeviceName),
 		"filenameTemplate":      defaultStr(strings.TrimSpace(input.FilenameTemplate), "NSSF_Statement_{memberNo}_{date}.pdf"),
 		"passwordMode":          defaultStr(input.PasswordMode, "id_card"),
-		"portalUrl":             defaultStr(strings.TrimSpace(input.PortalURL), "https://nssfdigital.enssf.co.ke"),
-		"previewBeforeDispatch": fmt.Sprintf("%v", input.PreviewBeforeDispatch),
+		"portalUrl":               defaultStr(strings.TrimSpace(input.PortalURL), "https://nssfdigital.enssf.co.ke"),
+		"previewBeforeDispatch":   fmt.Sprintf("%v", input.PreviewBeforeDispatch),
+		"emailSubjectTemplate":    defaultStr(strings.TrimSpace(input.EmailSubjectTemplate), DefaultEmailSubjectTemplate),
+		"whatsappMessageTemplate": defaultStr(strings.TrimSpace(input.WhatsAppMessageTemplate), DefaultWhatsAppMessageTemplate),
 	}
 
 	var sb strings.Builder

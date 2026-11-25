@@ -45,6 +45,7 @@ export interface DispatchReceipt {
     subject: string;
     htmlBody: string;
     plainText: string;
+    whatsappText?: string;
   };
 }
 
@@ -67,6 +68,8 @@ export interface AppSettings {
   passwordMode: 'id_card' | 'id_and_nssf_last4';
   portalUrl: string;
   previewBeforeDispatch: boolean;
+  emailSubjectTemplate: string;
+  whatsappMessageTemplate: string;
 }
 
 export interface WhatsAppQrData {

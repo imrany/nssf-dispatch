@@ -25,6 +25,20 @@ const DEFAULT_SETTINGS: AppSettings = {
   passwordMode: 'id_card',
   portalUrl: 'https://nssfdigital.enssf.co.ke',
   previewBeforeDispatch: true,
+  emailSubjectTemplate:
+    'Official NSSF Provisional Member Statement — {memberName} ({memberNo})',
+  whatsappMessageTemplate: `*NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA*
+Hello {memberName},
+
+Please find attached your official NSSF Provisional Member Statement ({renamedFile}) for {period}.
+
+*Member No:* {memberNo}
+*Total Fund Balance:* KES {totalAmount}
+
+*How to Open:*
+Enter {passwordGuide} when prompted for the PDF password.
+
+Self-Service: USSD *303# or {portalUrl}`,
 };
 
 export default function App() {
