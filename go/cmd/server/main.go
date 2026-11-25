@@ -562,7 +562,72 @@ func main() {
 	})
 
 	log.Printf("NSSF Digital Member Statement Dispatch (Go service) running on http://0.0.0.0:%s", port)
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, mux))
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, requestLoggerMiddleware(mux)))
+}
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	wroteHeader  bool
+	bytesWritten int64
+}
+
+func (lrw *loggingResponseWriter) WriteHeader(code int) {
+	if lrw.wroteHeader {
+		return
+	}
+	lrw.statusCode = code
+	lrw.wroteHeader = true
+	lrw.ResponseWriter.WriteHeader(code)
+}
+
+func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
+	if !lrw.wroteHeader {
+		lrw.WriteHeader(http.StatusOK)
+	}
+	n, err := lrw.ResponseWriter.Write(b)
+	lrw.bytesWritten += int64(n)
+	return n, err
+}
+
+func (lrw *loggingResponseWriter) Flush() {
+	if flusher, ok := lrw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (lrw *loggingResponseWriter) Unwrap() http.ResponseWriter {
+	return lrw.ResponseWriter
+}
+
+func requestLoggerMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		lrw := &loggingResponseWriter{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+		}
+
+		next.ServeHTTP(lrw, r)
+
+		duration := time.Since(start).Round(100 * time.Microsecond)
+		target := r.URL.Path
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+
+		ip := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+		if ip == "" {
+			ip = ClientIP(r)
+		}
+
+		kind := "HTTP"
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
+			kind = "API"
+		}
+
+		log.Printf("[%s] %s %s -> %d (%s, %dB) ip=%s", kind, r.Method, target, lrw.statusCode, duration, lrw.bytesWritten, ip)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
