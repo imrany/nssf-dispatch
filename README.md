@@ -71,19 +71,30 @@ npm run lint
 
 ---
 
-## Build Standalone Cross-Platform Binaries
+## Build & Package Cross-Platform Desktop Releases
 
 From the repository root:
 
 ```bash
-bash go/build.sh
+APP_VERSION=1.0.0 bash go/build.sh
 ```
 
-This builds `dist/`, embeds the frontend assets into `go/cmd/server/dist/`, and outputs zero-dependency binaries into `go/release/`:
-- `go/release/NSSF-Statement-Dispatch.exe` (Windows)
-- `go/release/nssf-statement-dispatch-linux` (Linux)
+This builds `dist/`, embeds the React SPA into `go/cmd/server/dist/`, compiles platform icons and publisher metadata (`NSSF Digital Statement Dispatcher` by `National Social Security Fund (NSSF) Kenya`), and outputs release artifacts into `go/release/`:
+- **Windows (`amd64`)**: `NSSF-Statement-Dispatch-windows-amd64.exe` (embedded `.ico` icon & PE VersionInfo) + `.zip`
+- **macOS (`amd64` & `arm64`)**: `NSSF-Statement-Dispatch-macos-{amd64,arm64}.app.tar.gz` (`.app` bundle with `nssf.icns` & `Info.plist`) + raw binaries
+- **Linux (`amd64` & `arm64`)**: `NSSF-Statement-Dispatch-linux-{amd64,arm64}.tar.gz` (binary, `nssf-dispatch.png`, `.desktop` entry, and `install.sh`) + raw binaries
+- **Checksums**: `SHA256SUMS.txt`
 
-Running the standalone binary directly serves both the React SPA and all `/api/*` endpoints from a single executable (`PORT=8080` by default).
+Running the standalone binary directly serves both the React SPA and all `/api/*` endpoints from a single executable (`PORT=8080` by default; pass `--open` to launch the browser automatically or `--version` to inspect build metadata).
+
+### Automated GitHub Releases (Tag Trigger)
+
+Pushing a version tag (`v*`) automatically triggers `.github/workflows/release.yml` to build all cross-platform executables/desktop bundles and publish them to **GitHub Releases**:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ---
 

@@ -3,18 +3,31 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+)
+
+// Build-time application metadata (overridden via -ldflags during packaging).
+var (
+	appName      = "NSSF Digital Statement Dispatcher"
+	appPublisher = "National Social Security Fund (NSSF) Kenya"
+	appVersion   = "1.0.0"
+	buildCommit  = "dev"
+	buildDate    = "unknown"
 )
 
 //go:embed dist/*
@@ -72,7 +85,45 @@ var (
 	usernameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]{3,64}$`)
 )
 
+func isMacOSAppBundle() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(exe, ".app/Contents/MacOS/")
+}
+
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
 func main() {
+	showVersion := false
+	showVersionShort := false
+	openUI := false
+	flag.BoolVar(&showVersion, "version", false, "Print application version and publisher metadata")
+	flag.BoolVar(&showVersionShort, "v", false, "Print application version and publisher metadata")
+	flag.BoolVar(&openUI, "open", false, "Open the portal in the default web browser after startup")
+	flag.Parse()
+
+	if showVersion || showVersionShort {
+		fmt.Printf("%s v%s\nPublisher: %s\nCommit: %s\nBuilt: %s\nTarget: %s/%s\n",
+			appName, appVersion, appPublisher, buildCommit, buildDate, runtime.GOOS, runtime.GOARCH)
+		return
+	}
+
 	if err := InitDB(); err != nil {
 		log.Fatalf("Database init failed: %v", err)
 	}
@@ -91,6 +142,11 @@ func main() {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
 			"ok":               true,
+			"name":             appName,
+			"publisher":        appPublisher,
+			"version":          appVersion,
+			"commit":           buildCommit,
+			"buildDate":        buildDate,
 			"engine":           "go",
 			"runtime":          "go-net-http",
 			"port":             port,
@@ -101,9 +157,16 @@ func main() {
 	mux.HandleFunc("/api/system/runtime", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
 			"ok":           true,
+			"name":         appName,
+			"publisher":    appPublisher,
+			"version":      appVersion,
+			"commit":       buildCommit,
+			"buildDate":    buildDate,
 			"activeEngine": "go",
 			"goEngineInfo": map[string]any{
 				"engine":           "go",
+				"version":          appVersion,
+				"publisher":        appPublisher,
 				"sqliteCliBackend": hasSQLiteCLI(),
 			},
 		})
@@ -584,8 +647,20 @@ func main() {
 		_, _ = w.Write(indexBytes)
 	})
 
-	log.Printf("NSSF Digital Member Statement Dispatch (Go service) running on http://0.0.0.0:%s", port)
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, requestLoggerMiddleware(mux)))
+	ln, err := net.Listen("tcp", "0.0.0.0:"+port)
+	if err != nil {
+		log.Fatalf("Failed to bind port %s: %v", port, err)
+	}
+
+	log.Printf("%s v%s (%s) listening on http://127.0.0.1:%s", appName, appVersion, appPublisher, port)
+	if (openUI || os.Getenv("NSSF_OPEN_BROWSER") == "1" || isMacOSAppBundle()) && os.Getenv("NSSF_NO_BROWSER") != "1" {
+		go func() {
+			time.Sleep(350 * time.Millisecond)
+			openBrowser("http://127.0.0.1:" + port)
+		}()
+	}
+
+	log.Fatal(http.Serve(ln, requestLoggerMiddleware(mux)))
 }
 
 type loggingResponseWriter struct {
