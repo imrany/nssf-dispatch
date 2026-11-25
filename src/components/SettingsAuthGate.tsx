@@ -159,7 +159,7 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
             <span>Back to Service Desk</span>
           </button>
         </div>
-        <div className="text-center space-y-3">
+        <div className="pt-8 text-center space-y-3">
           <div className="w-11 h-11 rounded-full bg-emerald-50 border border-emerald-200 text-[#2B7A3B] flex items-center justify-center mx-auto">
             <Lock className="w-5 h-5" aria-hidden="true" />
           </div>
@@ -184,7 +184,7 @@ export function SettingsAuthGate({ onAuthenticated, onBackToDispatch }: Settings
             <span>Back to Service Desk</span>
           </button>
         </div>
-        <div className="text-center space-y-4">
+        <div className="text-center pt-8 space-y-4">
           <AlertCircle className="w-8 h-8 text-red-600 mx-auto" aria-hidden="true" />
           <div className="text-sm font-semibold text-[#0F2437]">
             {statusError || 'Unable to verify administrator status.'}
