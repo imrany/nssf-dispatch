@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { motion } from 'motion/react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -336,27 +337,76 @@ export function SettingsView({ settings, onSettingsUpdated }: SettingsViewProps)
                 </h2>
               </div>
               <span
-                className={`text-xs font-semibold ${
+                className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
                   form.whatsappPaired ? 'text-[#006837]' : 'text-amber-700'
                 }`}
               >
-                {form.whatsappPaired ? 'Paired' : 'Awaiting Scan'}
+                {!form.whatsappPaired && (
+                  <motion.span
+                    aria-hidden="true"
+                    animate={{ scale: [1, 1.35, 1], opacity: [0.6, 1, 0.6] }}
+                    transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+                    className="w-2 h-2 rounded-full bg-amber-500 inline-block"
+                  />
+                )}
+                <span>{form.whatsappPaired ? 'Paired' : 'Awaiting Scan'}</span>
               </span>
             </div>
 
             <div className="flex flex-col sm:flex-row items-center gap-4">
-              <div className="border border-slate-200 rounded-md p-2.5 bg-white shrink-0">
-                {loadingQr || !qrDataUri ? (
-                  <div className="w-[170px] h-[170px] bg-slate-100 rounded flex items-center justify-center text-xs text-slate-500">
-                    Generating QR...
-                  </div>
-                ) : (
-                  <img
-                    src={qrDataUri}
-                    alt="WhatsApp Link Device QR Code"
-                    className="w-[170px] h-[170px] block"
+              <div className="relative shrink-0">
+                {!form.whatsappPaired && !loadingQr && qrDataUri && (
+                  <motion.div
+                    aria-hidden="true"
+                    animate={{
+                      scale: [0.98, 1.045, 0.98],
+                      opacity: [0.25, 0.65, 0.25],
+                    }}
+                    transition={{
+                      duration: 2.4,
+                      repeat: Infinity,
+                      ease: 'easeInOut',
+                    }}
+                    className="absolute -inset-1 rounded-lg border-2 border-[#2B7A3B]/45 bg-[#2B7A3B]/5 pointer-events-none"
                   />
                 )}
+
+                <motion.div
+                  animate={
+                    !form.whatsappPaired && !loadingQr && qrDataUri
+                      ? {
+                          scale: [1, 1.015, 1],
+                          opacity: [0.92, 1, 0.92],
+                        }
+                      : { scale: 1, opacity: 1 }
+                  }
+                  transition={
+                    !form.whatsappPaired && !loadingQr && qrDataUri
+                      ? {
+                          duration: 2.4,
+                          repeat: Infinity,
+                          ease: 'easeInOut',
+                        }
+                      : { duration: 0.2 }
+                  }
+                  className={`relative border rounded-md p-2.5 bg-white ${
+                    form.whatsappPaired
+                      ? 'border-emerald-300'
+                      : 'border-[#2B7A3B]/35 shadow-sm'
+                  }`}
+                >
+                  {loadingQr || !qrDataUri ? (
+                    <div className="w-[170px] h-[170px] bg-slate-100 rounded flex items-center justify-center text-xs text-slate-500">
+                      Generating QR...
+                    </div>
+                  ) : (
+                    <img
+                      src={qrDataUri}
+                      alt="WhatsApp Link Device QR Code"
+                      className="w-[170px] h-[170px] block"
+                    />
+                  )}
+                </motion.div>
               </div>
 
               <div className="space-y-3 text-xs text-slate-600 flex-1">

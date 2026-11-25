@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { CheckCircle2, Download, FileKey2, Mail, MessageSquare } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import type { DispatchReceipt } from '../types';
 import { NssfLogo } from './NssfLogo';
 
@@ -17,7 +18,13 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
         <div>
           <NssfLogo subtitle="NSSF DIGITAL STATEMENT DISPATCH" />
           <div className="flex items-center gap-3 mt-3">
-            <CheckCircle2 className="w-8 h-8 text-[#2B7A3B] shrink-0" aria-hidden="true" />
+            <motion.div
+              initial={{ scale: 0.75, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 24 }}
+            >
+              <CheckCircle2 className="w-8 h-8 text-[#2B7A3B] shrink-0" aria-hidden="true" />
+            </motion.div>
             <h1 className="font-display text-3xl sm:text-4xl font-extrabold tracking-tight text-[#0F2437]">
               DISPATCH CONFIRMED
             </h1>
@@ -34,21 +41,27 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
         </div>
 
         <div className="flex flex-wrap items-center gap-3 shrink-0">
-          <a
+          <motion.a
+            whileHover={{ y: -1 }}
+            whileTap={{ scale: 0.99 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
             href={receipt.downloadUrl}
             download={receipt.renamedFile}
             className="inline-flex items-center gap-2 px-5 h-11 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-wider uppercase transition-colors whitespace-nowrap"
           >
             <Download className="w-4 h-4" aria-hidden="true" />
             <span>DOWNLOAD PROTECTED PDF</span>
-          </a>
-          <button
+          </motion.a>
+          <motion.button
+            whileHover={{ y: -1 }}
+            whileTap={{ scale: 0.99 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
             type="button"
             onClick={onReset}
             className="inline-flex items-center gap-2 px-5 h-11 rounded bg-[#6BC300] hover:bg-[#5DAE00] text-white text-xs font-bold tracking-wider uppercase transition-colors whitespace-nowrap cursor-pointer"
           >
             <span>NEW DISPATCH</span>
-          </button>
+          </motion.button>
         </div>
       </div>
 
@@ -140,18 +153,35 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
             </div>
           </div>
 
-          {previewTab === 'email' ? (
-            <iframe
-              title="NSSF Official Email Preview"
-              sandbox=""
-              srcDoc={receipt.emailPreview.htmlBody}
-              className="w-full h-[540px] border-0 bg-[#f4f6f5]"
-            />
-          ) : (
-            <pre className="p-6 text-xs font-mono text-[#0F2437] whitespace-pre-wrap leading-relaxed bg-slate-50 max-h-[540px] overflow-y-auto">
-              {receipt.emailPreview.plainText}
-            </pre>
-          )}
+          <AnimatePresence mode="wait">
+            {previewTab === 'email' ? (
+              <motion.div
+                key="email"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.14 }}
+              >
+                <iframe
+                  title="NSSF Official Email Preview"
+                  sandbox=""
+                  srcDoc={receipt.emailPreview.htmlBody}
+                  className="w-full h-[540px] border-0 bg-[#f4f6f5]"
+                />
+              </motion.div>
+            ) : (
+              <motion.pre
+                key="text"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.14 }}
+                className="p-6 text-xs font-mono text-[#0F2437] whitespace-pre-wrap leading-relaxed bg-slate-50 max-h-[540px] overflow-y-auto"
+              >
+                {receipt.emailPreview.plainText}
+              </motion.pre>
+            )}
+          </AnimatePresence>
         </section>
       </div>
     </div>

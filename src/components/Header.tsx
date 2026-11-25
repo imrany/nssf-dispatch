@@ -1,4 +1,5 @@
 import { ExternalLink } from 'lucide-react';
+import { motion } from 'motion/react';
 import type { ActiveTab } from '../types';
 
 interface HeaderProps {
@@ -24,9 +25,14 @@ export function Header({ activeTab, onTabChange, portalUrl }: HeaderProps) {
         <button
           type="button"
           onClick={() => onTabChange('dispatch')}
-          className="font-display font-bold text-base tracking-tight text-[#1E6B34] whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#2B7A3B]"
+          aria-label="NSSF Digital Statement Dispatch Home"
+          className="shrink-0 cursor-pointer flex items-center focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#2B7A3B]"
         >
-          NSSF Digital
+          <img
+            src="/assets/aistudio/nssf-cl_d27cbb88.png"
+            alt="NSSF — Growing You. For Good"
+            className="h-9 w-auto object-contain block"
+          />
         </button>
 
         <nav className="flex items-center gap-7 overflow-x-auto" aria-label="Primary navigation">
@@ -45,7 +51,9 @@ export function Header({ activeTab, onTabChange, portalUrl }: HeaderProps) {
               >
                 {item.label}
                 {isActive && (
-                  <span
+                  <motion.span
+                    layoutId="nssf-nav-indicator"
+                    transition={{ type: 'spring', stiffness: 480, damping: 36 }}
                     className="absolute inset-x-0 bottom-0 h-[3px] bg-[#2B7A3B]"
                     aria-hidden="true"
                   />

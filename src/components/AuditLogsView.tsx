@@ -1,9 +1,37 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Download, RefreshCw, Search } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import { ChevronDown, Download, FileSpreadsheet, FileText, RefreshCw, Search } from 'lucide-react';
 import type { AuditLog } from '../types';
 
 interface AuditLogsViewProps {
   onGoToDispatch: () => void;
+}
+
+const SMOOTH_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
+
+function sanitizeSpreadsheetCell(value: string | number): string {
+  const str = String(value ?? '');
+  return /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
@@ -11,6 +39,8 @@ export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [channelFilter, setChannelFilter] = useState<'ALL' | 'EMAIL' | 'WHATSAPP'>('ALL');
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const loadLogs = async () => {
     setLoading(true);
@@ -29,6 +59,26 @@ export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
     loadLogs();
   }, []);
 
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setExportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [exportMenuOpen]);
+
   const filteredLogs = useMemo(() => {
     const q = query.trim().toLowerCase();
     return logs.filter((row) => {
@@ -45,21 +95,144 @@ export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
   }, [logs, query, channelFilter]);
 
   const exportCsv = () => {
-    const headers = ['ID', 'Timestamp', 'MemberNo', 'MemberName', 'Channel', 'Destination', 'Filename', 'Status', 'Details'];
-    const escapeCsv = (val: string | number) => `"${String(val).replace(/"/g, '""')}"`;
+    setExportMenuOpen(false);
+    const headers = [
+      'ID',
+      'Timestamp',
+      'MemberNo',
+      'MemberName',
+      'Channel',
+      'Destination',
+      'Filename',
+      'Status',
+      'Details',
+    ];
+    const escapeCsv = (val: string | number) =>
+      `"${sanitizeSpreadsheetCell(val).replace(/"/g, '""')}"`;
     const rows = filteredLogs.map((l) =>
-      [l.id, l.timestamp, l.memberNo, l.memberName, l.channel, l.destination, l.renamedFile, l.status, l.details]
+      [
+        l.id,
+        l.timestamp,
+        l.memberNo,
+        l.memberName,
+        l.channel,
+        l.destination,
+        l.renamedFile,
+        l.status,
+        l.details,
+      ]
         .map(escapeCsv)
         .join(',')
     );
-    const csv = [headers.join(','), ...rows].join('\n');
+    const csv = `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`;
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `NSSF_Dispatch_Audit_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, `NSSF_Compliance_Audit_${new Date().toISOString().slice(0, 10)}.csv`);
+  };
+
+  const exportExcel = () => {
+    setExportMenuOpen(false);
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const exportedAt = new Date().toISOString();
+    const headers = [
+      'ID',
+      'Timestamp',
+      'NSSF Member No',
+      'Member Name',
+      'Channel',
+      'Recipient',
+      'Protected Filename',
+      'Outcome',
+      'Compliance Details',
+    ];
+
+    const headerCells = headers
+      .map(
+        (h) =>
+          `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`
+      )
+      .join('');
+
+    const dataRows = filteredLogs
+      .map((l) => {
+        const textCells = [
+          l.timestamp,
+          l.memberNo,
+          l.memberName,
+          l.channel,
+          l.destination,
+          l.renamedFile,
+          l.status,
+          l.details,
+        ]
+          .map(
+            (val) =>
+              `<Cell ss:StyleID="Cell"><Data ss:Type="String">${escapeXml(
+                sanitizeSpreadsheetCell(val)
+              )}</Data></Cell>`
+          )
+          .join('');
+        return `<Row><Cell ss:StyleID="CellNum"><Data ss:Type="Number">${Number(
+          l.id
+        )}</Data></Cell>${textCells}</Row>`;
+      })
+      .join('');
+
+    const workbookXml = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="Title">
+   <Font ss:Bold="1" ss:Size="13" ss:Color="#0F2437"/>
+  </Style>
+  <Style ss:ID="Meta">
+   <Font ss:Size="10" ss:Color="#475569"/>
+  </Style>
+  <Style ss:ID="Header">
+   <Font ss:Bold="1" ss:Color="#FFFFFF"/>
+   <Interior ss:Color="#2B7A3B" ss:Pattern="Solid"/>
+   <Borders>
+    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#1E6B34"/>
+   </Borders>
+  </Style>
+  <Style ss:ID="Cell">
+   <Borders>
+    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
+   </Borders>
+  </Style>
+  <Style ss:ID="CellNum">
+   <NumberFormat ss:Format="0"/>
+   <Borders>
+    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
+   </Borders>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="NSSF Audit Logs">
+  <Table>
+   <Column ss:Width="45"/>
+   <Column ss:Width="135"/>
+   <Column ss:Width="105"/>
+   <Column ss:Width="180"/>
+   <Column ss:Width="80"/>
+   <Column ss:Width="175"/>
+   <Column ss:Width="200"/>
+   <Column ss:Width="115"/>
+   <Column ss:Width="250"/>
+   <Row>
+    <Cell ss:StyleID="Title"><Data ss:Type="String">NSSF Digital Statement Dispatch — Compliance Audit Report</Data></Cell>
+   </Row>
+   <Row>
+    <Cell ss:StyleID="Meta"><Data ss:Type="String">Generated: ${escapeXml(exportedAt)} | Channel: ${escapeXml(channelFilter)}${query.trim() ? ` | Search: ${escapeXml(sanitizeSpreadsheetCell(query.trim()))}` : ''} | Records: ${filteredLogs.length}</Data></Cell>
+   </Row>
+   <Row/>
+   <Row>${headerCells}</Row>
+   ${dataRows}
+  </Table>
+ </Worksheet>
+</Workbook>`;
+
+    const blob = new Blob([workbookXml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    triggerDownload(blob, `NSSF_Compliance_Audit_${dateStamp}.xls`);
   };
 
   return (
@@ -78,23 +251,94 @@ export function AuditLogsView({ onGoToDispatch }: AuditLogsViewProps) {
         </div>
 
         <div className="flex items-center gap-2.5 shrink-0">
-          <button
+          <motion.button
             type="button"
+            whileHover={{ y: -1 }}
+            whileTap={{ scale: 0.98 }}
+            transition={{ duration: 0.14, ease: SMOOTH_EASE }}
             onClick={loadLogs}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-[#D1D9E0] bg-white text-xs font-bold tracking-wider uppercase text-[#0F2437] hover:bg-slate-50 cursor-pointer whitespace-nowrap"
           >
             <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Refresh</span>
-          </button>
-          <button
-            type="button"
-            onClick={exportCsv}
-            disabled={filteredLogs.length === 0}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-bold tracking-wider uppercase hover:bg-[#226430] disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
-          >
-            <Download className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Export CSV</span>
-          </button>
+          </motion.button>
+
+          <div ref={exportMenuRef} className="relative">
+            <motion.button
+              type="button"
+              onClick={() => setExportMenuOpen((prev) => !prev)}
+              disabled={filteredLogs.length === 0}
+              aria-haspopup="menu"
+              aria-expanded={exportMenuOpen}
+              whileHover={filteredLogs.length > 0 ? { y: -1 } : undefined}
+              whileTap={filteredLogs.length > 0 ? { scale: 0.98 } : undefined}
+              transition={{ duration: 0.14, ease: SMOOTH_EASE }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-bold tracking-wider uppercase hover:bg-[#226430] disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Export Logs</span>
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                  exportMenuOpen ? 'rotate-180' : ''
+                }`}
+                aria-hidden="true"
+              />
+            </motion.button>
+
+            <AnimatePresence>
+              {exportMenuOpen && filteredLogs.length > 0 && (
+                <motion.div
+                  role="menu"
+                  aria-label="Choose audit log export format"
+                  initial={{ opacity: 0, y: 6, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 4, scale: 0.97 }}
+                  transition={{ duration: 0.15, ease: SMOOTH_EASE }}
+                  style={{ transformOrigin: 'top right' }}
+                  className="absolute right-0 mt-2 w-60 rounded-lg border border-slate-200 bg-white shadow-[0_12px_32px_rgba(15,36,55,0.14)] py-1.5 z-30"
+                >
+                  <div className="px-3.5 py-1.5 text-[10px] font-bold tracking-[0.14em] uppercase text-slate-400 border-b border-slate-100">
+                    Compliance Format ({filteredLogs.length})
+                  </div>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={exportCsv}
+                    className="w-full px-3.5 py-2.5 text-left flex items-start gap-2.5 hover:bg-emerald-50/70 transition-colors cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4 text-[#2B7A3B] shrink-0 mt-0.5" aria-hidden="true" />
+                    <div>
+                      <div className="text-xs font-bold text-[#0F2437]">Download CSV (.csv)</div>
+                      <div className="text-[11px] text-slate-500">
+                        UTF-8 comma-separated compliance ledger
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={exportExcel}
+                    className="w-full px-3.5 py-2.5 text-left flex items-start gap-2.5 hover:bg-emerald-50/70 transition-colors cursor-pointer"
+                  >
+                    <FileSpreadsheet
+                      className="w-4 h-4 text-[#2B7A3B] shrink-0 mt-0.5"
+                      aria-hidden="true"
+                    />
+                    <div>
+                      <div className="text-xs font-bold text-[#0F2437]">
+                        Download MS-Excel (.xls)
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Formatted spreadsheet workbook report
+                      </div>
+                    </div>
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
 
