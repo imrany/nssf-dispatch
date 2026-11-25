@@ -27,7 +27,7 @@ export function NssfLogo({
       />
 
       {showSubtitle && displaySubtitle && (
-        <div className="mt-2.5 text-[11px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
+        <div className="mt-2.5 text-[13px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
           {displaySubtitle}
         </div>
       )}
