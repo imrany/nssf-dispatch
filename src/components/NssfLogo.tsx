@@ -10,7 +10,7 @@ export function NssfLogo({
   return (
     <div className="inline-flex flex-col items-start select-none">
       <img
-        src="/assets/aistudio/nssf-cl_d27cbb88.png"
+        src="/assets/nssf-cl_d27cbb88.png"
         alt="NSSF — Growing You. For Good"
         className={
           compact
