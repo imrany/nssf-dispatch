@@ -958,7 +958,7 @@ export function SettingsView({
                         {qrData?.deviceName || form.whatsappDeviceName}
                       </div>
                       <div className="text-slate-600">
-                        Native <span className="font-mono">whatsmeow</span> multi-device session stored locally.
+                        multi-device session stored locally.
                       </div>
                     </div>
                   </div>
@@ -1082,21 +1082,6 @@ export function SettingsView({
                 onChange={(e) => setForm({ ...form, portalUrl: e.target.value })}
                 className="w-full px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:border-[#006837]"
               />
-            </div>
-          </div>
-
-          <div className="bg-slate-50 border border-slate-200 rounded-md p-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="text-xs text-slate-600">
-                <strong className="text-slate-800">Go Backend Runtime:</strong>{' '}
-                Served natively by <code className="text-[#006837]">go/cmd/server</code> for PDF validation, encryption, SMTP/WhatsApp dispatch, and embedded frontend delivery.
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="px-2.5 py-1 rounded text-[11px] font-bold uppercase tracking-wider border bg-emerald-50 text-[#1E6B34] border-emerald-200">
-                  Engine: Go Standalone
-                  {runtimeInfo?.goEngineInfo?.sqliteCliBackend === false ? ' (JSON Fallback)' : ''}
-                </span>
-              </div>
             </div>
           </div>
         </section>
@@ -1341,7 +1326,7 @@ export function SettingsView({
             className="inline-flex items-center gap-2 px-8 h-12 rounded bg-[#2B7A3B] text-white text-xs font-bold tracking-[0.16em] uppercase hover:bg-[#226430] disabled:opacity-50 cursor-pointer whitespace-nowrap"
           >
             <Save className="w-4 h-4" aria-hidden="true" />
-            <span>{saving ? 'SAVING TO SQLITE...' : 'SAVE SYSTEM CONFIGURATION'}</span>
+            <span>{saving ? 'SAVING...' : 'SAVE SYSTEM CONFIGURATION'}</span>
           </button>
         </div>
       </form>
@@ -1393,26 +1378,19 @@ export function SettingsView({
                 {activePendingAction.type === 'tab'
                   ? `navigating to ${activePendingAction.targetTab === 'dispatch' ? 'Service Desk' : 'Audit Logs'}`
                   : activePendingAction.type === 'lock_settings'
-                    ? 'locking System Settings'
+                    ? 'locking Settings'
                     : 'refreshing settings'}
                 , or discard them to continue?
               </div>
 
-              <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-end gap-2.5">
-                <button
-                  type="button"
-                  onClick={clearPendingModal}
-                  className="px-3.5 py-2 rounded border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
-                >
-                  Cancel
-                </button>
+              <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                 <button
                   type="button"
                   disabled={saving}
                   onClick={handleIgnoreAndProceed}
-                  className="px-3.5 py-2 rounded border border-red-200 bg-white text-xs font-bold text-red-700 hover:bg-red-50 cursor-pointer disabled:opacity-50"
+                  className="px-3.5 py-2 rounded border border-slate-300 bg-white text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer disabled:opacity-50"
                 >
-                  Ignore Changes &amp; Proceed
+                  Ignore Changes
                 </button>
                 <button
                   type="button"

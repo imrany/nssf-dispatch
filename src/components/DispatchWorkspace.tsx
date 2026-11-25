@@ -479,7 +479,7 @@ export function DispatchWorkspace({
                 className={`relative overflow-hidden bg-white rounded-lg p-12 sm:p-14 text-center shadow-[0_6px_28px_rgba(15,36,55,0.08)] border border-b-[3px] transition-shadow duration-200 disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
                   emailHovered
                     ? 'border-[#2B7A3B] border-b-[#2B7A3B] shadow-[0_14px_34px_rgba(43,122,59,0.22)]'
-                    : 'border-slate-100 border-b-[#2B7A3B]'
+                    : 'border-slate-200'
                 }`}
               >
                 <motion.div
@@ -535,7 +535,7 @@ export function DispatchWorkspace({
                 className={`relative overflow-hidden bg-white rounded-lg p-12 sm:p-14 text-center shadow-[0_6px_28px_rgba(15,36,55,0.08)] border border-b-[3px] transition-shadow duration-200 disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
                   whatsappHovered
                     ? 'border-[#2B7A3B] border-b-[#2B7A3B] shadow-[0_14px_34px_rgba(43,122,59,0.22)]'
-                    : 'border-slate-100 border-b-[#2B7A3B]'
+                    : 'border-slate-200'
                 }`}
               >
                 <motion.div
@@ -592,7 +592,7 @@ export function DispatchWorkspace({
                 className={`relative overflow-hidden w-full bg-white rounded-md py-4 px-6 text-center shadow-[0_4px_16px_rgba(15,36,55,0.05)] border border-b-2 transition-shadow duration-200 text-sm font-bold cursor-pointer ${
                   bothHovered
                     ? 'border-[#2B7A3B] border-b-[#2B7A3B] shadow-[0_10px_24px_rgba(43,122,59,0.18)]'
-                    : 'border-slate-200 border-b-[#6BC300]'
+                    : 'border-slate-200'
                 }`}
               >
                 <motion.div
