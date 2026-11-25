@@ -11,5 +11,7 @@ pnpm-workspace.yaml
 whatsapp_auth/
 
 go/*.db
+*.db
+*.lock
 go/release/
 go/cmd/server/*.syso
