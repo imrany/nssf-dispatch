@@ -83,7 +83,9 @@ export interface SystemRuntimeInfo {
 
 export interface WhatsAppQrData {
   paired: boolean;
+  connected?: boolean;
   bridgeReachable: boolean;
+  engine?: string;
   sessionCode: string;
   qrSvg: string;
   deviceName: string;

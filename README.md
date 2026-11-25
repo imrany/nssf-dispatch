@@ -24,7 +24,7 @@ Powered exclusively by a **standalone zero-dependency Go backend** (`go/cmd/serv
 ## Tech Stack
 
 - **Frontend**: React 19, TypeScript, Vite 8, Tailwind CSS v4, Motion, Lucide React
-- **Go Backend**: Zero-third-party-dependency Go (`go/cmd/server`) using Go stdlib (`net/http`, `crypto/*`, `net/smtp`, `os/exec` for `sqlite3` CLI with automatic JSON-state persistence fallback when `sqlite3` is absent)
+- **Go Backend**: Go (`go/cmd/server`) using `net/http`, `crypto/*`, `net/smtp`, `go.mau.fi/whatsmeow` (native WhatsApp Web Multi-Device client), `modernc.org/sqlite` (pure-Go `CGO_ENABLED=0` SQLite driver), `rsc.io/qr`, and `os/exec` `sqlite3` CLI with automatic JSON-state persistence fallback when `sqlite3` is absent
 
 ---
 
@@ -39,6 +39,7 @@ Copy `.env.example` to `.env` if needed:
 | `SESSION_SECRET` | Secret used to sign admin Bearer tokens (ephemeral random secret generated on startup if unset) | _(auto-generated)_ |
 | `GO_SERVICE_URL` | Go backend URL proxied by Vite `/api` during frontend development | `http://127.0.0.1:8080` |
 | `NSSF_DB_PATH` | Optional SQLite database file path for the Go server | `nssf_dispatch.db` |
+| `NSSF_WA_DB_PATH` | Optional SQLite database file path for `whatsmeow` device/session keys | `nssf_whatsapp.db` |
 
 ---
 
@@ -46,12 +47,12 @@ Copy `.env.example` to `.env` if needed:
 
 ### 1. Start the Go Backend
 
-Build and embed the frontend assets first if `go/cmd/server/dist` is empty or outdated, then start the Go server:
+Build and embed the frontend assets first if `go/cmd/server/dist` is empty or outdated, resolve Go modules, then start the Go server:
 
 ```bash
 npm install
 npm run build
-cd go && PORT=8080 go run ./cmd/server
+cd go && go mod tidy && PORT=8080 go run ./cmd/server
 ```
 
 ### 2. Optional: Frontend Hot-Dev with Vite Proxy

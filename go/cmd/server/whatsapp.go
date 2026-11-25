@@ -1,19 +1,33 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/json"
+	"context"
 	"fmt"
-	"net/http"
-	"net/url"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	_ "modernc.org/sqlite"
+
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
+	"rsc.io/qr"
 )
 
 type WhatsAppQRResponse struct {
 	Paired          bool   `json:"paired"`
+	Connected       bool   `json:"connected"`
 	BridgeReachable bool   `json:"bridgeReachable"`
+	Engine          string `json:"engine"`
 	SessionCode     string `json:"sessionCode"`
 	QRSvg           string `json:"qrSvg"`
 	DeviceName      string `json:"deviceName"`
@@ -23,533 +37,624 @@ type WhatsAppQRResponse struct {
 	Error           string `json:"error,omitempty"`
 }
 
-// Pure Go ISO 18004 Byte-Mode QR Code Generator (ECC Level L, Versions 3 / 5 / 12)
-// Supports payloads up to 367 bytes (including full WhatsApp Web Multi-Device pairing tokens).
-type qrVersionSpec struct {
-	version      int
-	size         int
-	lenBits      int
-	eccPerBlock  int
-	group1Blocks int
-	group1Data   int
-	group2Blocks int
-	group2Data   int
-	alignCenters []int
-	versionBits  uint32
+type whatsAppManager struct {
+	initMu    sync.Mutex
+	mu        sync.Mutex
+	container *sqlstore.Container
+	client    *whatsmeow.Client
+
+	sessionCode string
+	qrPayload   string
+	qrSvg       string
+	paired      bool
+	connected   bool
+	pairedPhone string
+	pairedAt    string
+	deviceName  string
+	lastError   string
+
+	qrLoopActive bool
+	qrCancel     context.CancelFunc
+	firstQRCh    chan struct{}
 }
 
-var qrVersionSpecs = []qrVersionSpec{
-	{
-		version:      3,
-		size:         29,
-		lenBits:      8,
-		eccPerBlock:  15,
-		group1Blocks: 1,
-		group1Data:   55,
-		group2Blocks: 0,
-		group2Data:   0,
-		alignCenters: []int{6, 22},
-		versionBits:  0,
-	},
-	{
-		version:      5,
-		size:         37,
-		lenBits:      8,
-		eccPerBlock:  26,
-		group1Blocks: 1,
-		group1Data:   108,
-		group2Blocks: 0,
-		group2Data:   0,
-		alignCenters: []int{6, 30},
-		versionBits:  0,
-	},
-	{
-		version:      12,
-		size:         65,
-		lenBits:      16,
-		eccPerBlock:  24,
-		group1Blocks: 2,
-		group1Data:   92,
-		group2Blocks: 2,
-		group2Data:   93,
-		alignCenters: []int{6, 32, 58},
-		versionBits:  0x0C762,
-	},
+var waManager = &whatsAppManager{}
+
+func getWhatsAppDBPath() string {
+	if p := strings.TrimSpace(os.Getenv("NSSF_WA_DB_PATH")); p != "" {
+		return p
+	}
+	dir := filepath.Dir(getDBPath())
+	if dir == "" || dir == "." {
+		return "nssf_whatsapp.db"
+	}
+	return filepath.Join(dir, "nssf_whatsapp.db")
 }
 
-var (
-	gfExp [512]byte
-	gfLog [256]int
-)
-
-func init() {
-	x := 1
-	for i := 0; i < 255; i++ {
-		gfExp[i] = byte(x)
-		gfLog[x] = i
-		x <<= 1
-		if (x & 0x100) != 0 {
-			x ^= 0x11d
-		}
-	}
-	for i := 255; i < 512; i++ {
-		gfExp[i] = gfExp[i-255]
-	}
-}
-
-func gfMul(a, b byte) byte {
-	if a == 0 || b == 0 {
-		return 0
-	}
-	return gfExp[gfLog[a]+gfLog[b]]
-}
-
-func rsGeneratorPoly(degree int) []byte {
-	poly := []byte{1}
-	for i := 0; i < degree; i++ {
-		next := make([]byte, len(poly)+1)
-		factor := gfExp[i]
-		for j := 0; j < len(poly); j++ {
-			next[j] ^= poly[j]
-			next[j+1] ^= gfMul(poly[j], factor)
-		}
-		poly = next
-	}
-	return poly
-}
-
-func rsEncode(data []byte, eccCount int) []byte {
-	gen := rsGeneratorPoly(eccCount)
-	res := make([]byte, len(data)+eccCount)
-	copy(res, data)
-	for i := 0; i < len(data); i++ {
-		coef := res[i]
-		if coef != 0 {
-			for j := 0; j < len(gen); j++ {
-				res[i+j] ^= gfMul(gen[j], coef)
-			}
-		}
-	}
-	return res[len(data):]
-}
-
-func selectQRSpec(byteLen int) qrVersionSpec {
-	for _, spec := range qrVersionSpecs {
-		totalData := spec.group1Blocks*spec.group1Data + spec.group2Blocks*spec.group2Data
-		headerBytes := 2
-		if spec.lenBits == 16 {
-			headerBytes = 3
-		}
-		if byteLen <= totalData-headerBytes {
-			return spec
-		}
-	}
-	return qrVersionSpecs[len(qrVersionSpecs)-1]
-}
-
-func encodeQrMatrix(text string) ([][]int, int) {
-	raw := []byte(text)
-	spec := selectQRSpec(len(raw))
-	totalData := spec.group1Blocks*spec.group1Data + spec.group2Blocks*spec.group2Data
-	headerBytes := 2
-	if spec.lenBits == 16 {
-		headerBytes = 3
-	}
-	if len(raw) > totalData-headerBytes {
-		raw = raw[:totalData-headerBytes]
-	}
-
-	var bits []int
-	pushBits := func(val, count int) {
-		for i := count - 1; i >= 0; i-- {
-			bits = append(bits, (val>>i)&1)
-		}
-	}
-	pushBits(0b0100, 4)
-	pushBits(len(raw), spec.lenBits)
-	for _, b := range raw {
-		pushBits(int(b), 8)
-	}
-	for i := 0; i < 4 && len(bits) < totalData*8; i++ {
-		bits = append(bits, 0)
-	}
-	for len(bits)%8 != 0 {
-		bits = append(bits, 0)
-	}
-
-	data := make([]byte, totalData)
-	nBytes := len(bits) / 8
-	for i := 0; i < nBytes && i < totalData; i++ {
-		val := 0
-		for b := 0; b < 8; b++ {
-			val = (val << 1) | bits[i*8+b]
-		}
-		data[i] = byte(val)
-	}
-	padBytes := []byte{0xec, 0x11}
-	for i := nBytes; i < totalData; i++ {
-		data[i] = padBytes[(i-nBytes)%2]
-	}
-
-	// Split into RS blocks & interleave per ISO 18004
-	var dataBlocks [][]byte
-	var eccBlocks [][]byte
-	offset := 0
-	for i := 0; i < spec.group1Blocks; i++ {
-		blk := data[offset : offset+spec.group1Data]
-		offset += spec.group1Data
-		dataBlocks = append(dataBlocks, blk)
-		eccBlocks = append(eccBlocks, rsEncode(blk, spec.eccPerBlock))
-	}
-	for i := 0; i < spec.group2Blocks; i++ {
-		blk := data[offset : offset+spec.group2Data]
-		offset += spec.group2Data
-		dataBlocks = append(dataBlocks, blk)
-		eccBlocks = append(eccBlocks, rsEncode(blk, spec.eccPerBlock))
-	}
-
-	maxDataLen := spec.group1Data
-	if spec.group2Data > maxDataLen {
-		maxDataLen = spec.group2Data
-	}
-	var full []byte
-	for i := 0; i < maxDataLen; i++ {
-		for _, blk := range dataBlocks {
-			if i < len(blk) {
-				full = append(full, blk[i])
-			}
-		}
-	}
-	for i := 0; i < spec.eccPerBlock; i++ {
-		for _, blk := range eccBlocks {
-			full = append(full, blk[i])
-		}
-	}
-
-	sz := spec.size
-	grid := make([][]int, sz)
-	reserved := make([][]bool, sz)
-	for r := 0; r < sz; r++ {
-		grid[r] = make([]int, sz)
-		reserved[r] = make([]bool, sz)
-		for c := 0; c < sz; c++ {
-			grid[r][c] = -1
-		}
-	}
-
-	setFixed := func(r, c, val int) {
-		if r >= 0 && r < sz && c >= 0 && c < sz {
-			grid[r][c] = val
-			reserved[r][c] = true
-		}
-	}
-	placeFinder := func(top, left int) {
-		for r := -1; r <= 7; r++ {
-			for c := -1; c <= 7; c++ {
-				if r == -1 || r == 7 || c == -1 || c == 7 {
-					setFixed(top+r, left+c, 0)
-				} else {
-					dark := r == 0 || r == 6 || c == 0 || c == 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4)
-					if dark {
-						setFixed(top+r, left+c, 1)
-					} else {
-						setFixed(top+r, left+c, 0)
-					}
-				}
-			}
-		}
-	}
-	placeFinder(0, 0)
-	placeFinder(0, sz-7)
-	placeFinder(sz-7, 0)
-
-	// Alignment patterns
-	for _, rCenter := range spec.alignCenters {
-		for _, cCenter := range spec.alignCenters {
-			if (rCenter == 6 && cCenter == 6) ||
-				(rCenter == 6 && cCenter == sz-7) ||
-				(rCenter == sz-7 && cCenter == 6) {
-				continue
-			}
-			for r := -2; r <= 2; r++ {
-				for c := -2; c <= 2; c++ {
-					if r == 2 || r == -2 || c == 2 || c == -2 || (r == 0 && c == 0) {
-						setFixed(rCenter+r, cCenter+c, 1)
-					} else {
-						setFixed(rCenter+r, cCenter+c, 0)
-					}
-				}
-			}
-		}
-	}
-
-	// Timing patterns
-	for i := 8; i < sz-8; i++ {
-		val := 0
-		if i%2 == 0 {
-			val = 1
-		}
-		if !reserved[6][i] {
-			setFixed(6, i, val)
-		}
-		if !reserved[i][6] {
-			setFixed(i, 6, val)
-		}
-	}
-
-	// Dark module + Format info reservation
-	setFixed(sz-8, 8, 1)
-	for i := 0; i < 9; i++ {
-		if !reserved[8][i] {
-			reserved[8][i] = true
-		}
-		if !reserved[i][8] {
-			reserved[i][8] = true
-		}
-	}
-	for i := 0; i < 8; i++ {
-		reserved[8][sz-1-i] = true
-		reserved[sz-1-i][8] = true
-	}
-
-	// Version information bits for Version >= 7
-	if spec.version >= 7 && spec.versionBits != 0 {
-		for i := 0; i < 18; i++ {
-			bit := int((spec.versionBits >> i) & 1)
-			r := i / 3
-			c := sz - 11 + (i % 3)
-			setFixed(r, c, bit)
-			setFixed(c, r, bit)
-		}
-	}
-
-	var allBits []int
-	for _, b := range full {
-		for i := 7; i >= 0; i-- {
-			allBits = append(allBits, int((b>>i)&1))
-		}
-	}
-	bitIdx := 0
-	up := true
-	for col := sz - 1; col > 0; col -= 2 {
-		if col == 6 {
-			col--
-		}
-		for rowStep := 0; rowStep < sz; rowStep++ {
-			row := rowStep
-			if up {
-				row = sz - 1 - rowStep
-			}
-			for _, c := range []int{col, col - 1} {
-				if !reserved[row][c] {
-					bit := 0
-					if bitIdx < len(allBits) {
-						bit = allBits[bitIdx]
-						bitIdx++
-					}
-					if (row+c)%2 == 0 {
-						bit ^= 1
-					}
-					grid[row][c] = bit
-				}
-			}
-		}
-		up = !up
-	}
-
-	const fmtBits = 0x77c4
-	for i := 0; i < 15; i++ {
-		bit := (fmtBits >> i) & 1
-		if i < 6 {
-			grid[i][8] = bit
-		} else if i < 8 {
-			grid[i+1][8] = bit
-		} else {
-			grid[sz-15+i][8] = bit
-		}
-		if i < 8 {
-			grid[8][sz-1-i] = bit
-		} else if i < 9 {
-			grid[8][7] = bit
-		} else {
-			grid[8][14-i] = bit
-		}
-	}
-	return grid, sz
-}
-
+// GenerateQRSvg encodes any WhatsApp Web Multi-Device QR payload into a crisp SVG using rsc.io/qr.
 func GenerateQRSvg(payload string) string {
 	if strings.TrimSpace(payload) == "" {
 		return ""
 	}
-	matrix, sz := encodeQrMatrix(payload)
+	code, err := qr.Encode(payload, qr.L)
+	if err != nil {
+		return ""
+	}
+	sz := code.Size
 	const quiet = 4
 	total := sz + quiet*2
-	var rects strings.Builder
-	for r := 0; r < sz; r++ {
-		for c := 0; c < sz; c++ {
-			if matrix[r][c] == 1 {
-				fmt.Fprintf(&rects, `<rect x="%d" y="%d" width="1" height="1" fill="#052e16"/>`, c+quiet, r+quiet)
+	var pathBuf strings.Builder
+	for y := 0; y < sz; y++ {
+		for x := 0; x < sz; x++ {
+			if code.Black(x, y) {
+				fmt.Fprintf(&pathBuf, "M%d,%dh1v1h-1z", x+quiet, y+quiet)
 			}
 		}
 	}
-	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="210" height="210" shape-rendering="crispEdges"><rect width="%d" height="%d" fill="#ffffff"/>%s</svg>`, total, total, total, total, rects.String())
+	return fmt.Sprintf(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="210" height="210" shape-rendering="crispEdges"><rect width="%d" height="%d" fill="#ffffff"/><path fill="#052e16" d="%s"/></svg>`,
+		total, total, total, total, pathBuf.String(),
+	)
+}
+
+func InitWhatsApp(cfg AppSettings) {
+	if err := waManager.ensureInitialized(cfg); err != nil {
+		log.Printf("[WHATSAPP] Initialization deferred: %v", err)
+	}
+}
+
+func (m *whatsAppManager) ensureInitialized(cfg AppSettings) error {
+	m.initMu.Lock()
+	defer m.initMu.Unlock()
+
+	deviceLabel := defaultStr(strings.TrimSpace(cfg.WhatsAppDeviceName), "NSSF Service Desk")
+	store.DeviceProps.Os = proto.String(deviceLabel)
+
+	m.mu.Lock()
+	if m.container != nil && m.client != nil {
+		m.deviceName = deviceLabel
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", getWhatsAppDBPath())
+	dbLog := waLog.Stdout("WhatsAppDB", "WARN", true)
+	container, err := sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
+	if err != nil {
+		return fmt.Errorf("failed to open whatsmeow SQLite store: %w", err)
+	}
+
+	deviceStore, err := container.GetFirstDevice(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to load whatsmeow device store: %w", err)
+	}
+
+	client := m.newClientWithHandlers(deviceStore, deviceLabel)
+
+	existing, _ := GetWhatsAppSession()
+	sessionCode := "NSSF-WA-" + strings.ToUpper(randomHex(6))
+	pairedAt := ""
+	if existing != nil {
+		if existing.SessionCode != "" {
+			sessionCode = existing.SessionCode
+		}
+		pairedAt = existing.PairedAt
+	}
+
+	isPaired := deviceStore.ID != nil
+	pairedPhone := ""
+	if isPaired {
+		pairedPhone = deviceStore.ID.User
+		if pairedAt == "" {
+			pairedAt = time.Now().Format("2006-01-02 15:04:05")
+		}
+	}
+
+	m.mu.Lock()
+	m.container = container
+	m.client = client
+	m.sessionCode = sessionCode
+	m.deviceName = deviceLabel
+	m.paired = isPaired
+	m.pairedPhone = pairedPhone
+	m.pairedAt = pairedAt
+	m.lastError = ""
+	m.mu.Unlock()
+
+	if isPaired {
+		_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
+			SessionCode:     sessionCode,
+			Paired:          true,
+			DeviceName:      deviceLabel,
+			BridgeURL:       "whatsmeow://native",
+			BridgeReachable: true,
+			PairedPhone:     pairedPhone,
+			PairedAt:        pairedAt,
+		})
+		go func() {
+			if err := client.Connect(); err != nil {
+				log.Printf("[WHATSAPP] Auto-connect failed: %v", err)
+				m.mu.Lock()
+				m.lastError = err.Error()
+				m.mu.Unlock()
+			}
+		}()
+	} else {
+		_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
+			SessionCode:     sessionCode,
+			Paired:          false,
+			DeviceName:      deviceLabel,
+			BridgeURL:       "whatsmeow://native",
+			BridgeReachable: false,
+		})
+	}
+
+	return nil
+}
+
+func (m *whatsAppManager) newClientWithHandlers(deviceStore *store.Device, deviceLabel string) *whatsmeow.Client {
+	store.DeviceProps.Os = proto.String(deviceLabel)
+	clientLog := waLog.Stdout("WhatsApp", "INFO", true)
+	client := whatsmeow.NewClient(deviceStore, clientLog)
+	client.AddEventHandler(func(rawEvt any) {
+		switch evt := rawEvt.(type) {
+		case *events.PairSuccess:
+			m.handlePaired(evt.ID.User)
+		case *events.Connected:
+			phone := ""
+			if client.Store != nil && client.Store.ID != nil {
+				phone = client.Store.ID.User
+			}
+			m.handleConnected(phone)
+		case *events.Disconnected:
+			m.mu.Lock()
+			m.connected = false
+			m.mu.Unlock()
+			log.Printf("[WHATSAPP] Disconnected from WhatsApp Web")
+		case *events.LoggedOut:
+			m.handleLoggedOut(fmt.Sprintf("WhatsApp device unlinked from phone (%v)", evt.Reason))
+		}
+	})
+	return client
+}
+
+func (m *whatsAppManager) handlePaired(phone string) {
+	m.mu.Lock()
+	m.paired = true
+	if phone != "" {
+		m.pairedPhone = phone
+	}
+	if m.pairedAt == "" {
+		m.pairedAt = time.Now().Format("2006-01-02 15:04:05")
+	}
+	m.qrPayload = ""
+	m.qrSvg = ""
+	m.lastError = ""
+	m.qrLoopActive = false
+	if m.firstQRCh != nil {
+		close(m.firstQRCh)
+		m.firstQRCh = nil
+	}
+	rec := WhatsAppSessionRecord{
+		SessionCode:     m.sessionCode,
+		Paired:          true,
+		DeviceName:      m.deviceName,
+		BridgeURL:       "whatsmeow://native",
+		BridgeReachable: true,
+		PairedPhone:     m.pairedPhone,
+		PairedAt:        m.pairedAt,
+	}
+	m.mu.Unlock()
+
+	_, _ = SaveWhatsAppSession(rec)
+	log.Printf("[WHATSAPP] Paired device +%s (%s)", rec.PairedPhone, rec.DeviceName)
+}
+
+func (m *whatsAppManager) handleConnected(phone string) {
+	m.mu.Lock()
+	m.connected = true
+	m.lastError = ""
+	if phone != "" {
+		m.paired = true
+		m.pairedPhone = phone
+		if m.pairedAt == "" {
+			m.pairedAt = time.Now().Format("2006-01-02 15:04:05")
+		}
+	}
+	isPaired := m.paired
+	rec := WhatsAppSessionRecord{
+		SessionCode:     m.sessionCode,
+		Paired:          m.paired,
+		DeviceName:      m.deviceName,
+		BridgeURL:       "whatsmeow://native",
+		BridgeReachable: true,
+		PairedPhone:     m.pairedPhone,
+		PairedAt:        m.pairedAt,
+	}
+	m.mu.Unlock()
+
+	if isPaired {
+		_, _ = SaveWhatsAppSession(rec)
+	}
+	log.Printf("[WHATSAPP] Connected to WhatsApp Web (paired=%v, phone=+%s)", isPaired, rec.PairedPhone)
+}
+
+func (m *whatsAppManager) handleLoggedOut(reason string) {
+	m.mu.Lock()
+	if m.qrCancel != nil {
+		m.qrCancel()
+		m.qrCancel = nil
+	}
+	m.connected = false
+	m.paired = false
+	m.pairedPhone = ""
+	m.pairedAt = ""
+	m.qrPayload = ""
+	m.qrSvg = ""
+	m.qrLoopActive = false
+	m.lastError = reason
+	m.sessionCode = "NSSF-WA-" + strings.ToUpper(randomHex(6))
+	container := m.container
+	oldClient := m.client
+	deviceLabel := defaultStr(m.deviceName, "NSSF Service Desk")
+	rec := WhatsAppSessionRecord{
+		SessionCode:     m.sessionCode,
+		Paired:          false,
+		DeviceName:      deviceLabel,
+		BridgeURL:       "whatsmeow://native",
+		BridgeReachable: false,
+	}
+	m.mu.Unlock()
+
+	if oldClient != nil {
+		oldClient.Disconnect()
+		if container != nil && oldClient.Store != nil && oldClient.Store.ID != nil {
+			delCtx, cancelDel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = container.DeleteDevice(delCtx, oldClient.Store)
+			cancelDel()
+		}
+	}
+	if container != nil {
+		if freshStore, err := container.GetFirstDevice(context.Background()); err == nil {
+			freshClient := m.newClientWithHandlers(freshStore, deviceLabel)
+			m.mu.Lock()
+			m.client = freshClient
+			m.mu.Unlock()
+		}
+	}
+	_, _ = SaveWhatsAppSession(rec)
+	log.Printf("[WHATSAPP] %s", reason)
+}
+
+func (m *whatsAppManager) snapshot(cfg AppSettings) WhatsAppQRResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.client != nil {
+		m.connected = m.client.IsConnected()
+		if m.client.Store != nil && m.client.Store.ID != nil {
+			m.paired = true
+			if m.pairedPhone == "" {
+				m.pairedPhone = m.client.Store.ID.User
+			}
+		}
+	}
+	return WhatsAppQRResponse{
+		Paired:          m.paired,
+		Connected:       m.connected,
+		BridgeReachable: m.connected || m.qrSvg != "" || m.paired,
+		Engine:          "whatsmeow",
+		SessionCode:     m.sessionCode,
+		QRSvg:           m.qrSvg,
+		DeviceName:      defaultStr(strings.TrimSpace(cfg.WhatsAppDeviceName), m.deviceName),
+		BridgeURL:       "whatsmeow://native",
+		PairedPhone:     m.pairedPhone,
+		PairedAt:        m.pairedAt,
+		Error:           m.lastError,
+	}
 }
 
 func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
-	existing, _ := GetWhatsAppSession()
-	baseCode := "NSSF-WA-" + strings.ToUpper(randomHex(6))
-	if !forceRefresh && existing != nil && existing.SessionCode != "" {
-		baseCode = existing.SessionCode
+	if err := waManager.ensureInitialized(cfg); err != nil {
+		return WhatsAppQRResponse{
+			Paired:          false,
+			Connected:       false,
+			BridgeReachable: false,
+			Engine:          "whatsmeow",
+			SessionCode:     "NSSF-WA-" + strings.ToUpper(randomHex(6)),
+			DeviceName:      defaultStr(strings.TrimSpace(cfg.WhatsAppDeviceName), "NSSF Service Desk"),
+			BridgeURL:       "whatsmeow://native",
+			Error:           err.Error(),
+		}
 	}
 
-	if parsed, err := url.Parse(cfg.WhatsAppBridgeURL); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
-		client := &http.Client{Timeout: 2 * time.Second}
-		suffix := "/qr"
-		if forceRefresh {
-			suffix = "/qr?refresh=1"
+	waManager.mu.Lock()
+	client := waManager.client
+	container := waManager.container
+	alreadyPaired := client != nil && client.Store != nil && client.Store.ID != nil
+	qrLoopActive := waManager.qrLoopActive
+	hasQR := waManager.qrSvg != ""
+	waManager.mu.Unlock()
+
+	if alreadyPaired {
+		if !client.IsConnected() {
+			go func() {
+				if err := client.Connect(); err != nil {
+					waManager.mu.Lock()
+					waManager.lastError = err.Error()
+					waManager.mu.Unlock()
+				}
+			}()
 		}
-		resp, err := client.Get(strings.TrimRight(cfg.WhatsAppBridgeURL, "/") + suffix)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 {
-				var bridgeResp struct {
-					Paired      bool   `json:"paired"`
-					QRSvg       string `json:"qrSvg"`
-					QRText      string `json:"qrText"`
-					SessionCode string `json:"sessionCode"`
-					Phone       string `json:"phone"`
-					PairedPhone string `json:"pairedPhone"`
+		return waManager.snapshot(cfg)
+	}
+
+	if !forceRefresh && qrLoopActive && hasQR {
+		return waManager.snapshot(cfg)
+	}
+
+	// Start or restart QR pairing flow
+	waManager.mu.Lock()
+	if waManager.qrCancel != nil {
+		waManager.qrCancel()
+		waManager.qrCancel = nil
+	}
+	oldClient := waManager.client
+	deviceLabel := defaultStr(strings.TrimSpace(cfg.WhatsAppDeviceName), "NSSF Service Desk")
+	waManager.deviceName = deviceLabel
+	waManager.qrPayload = ""
+	waManager.qrSvg = ""
+	waManager.lastError = ""
+	waManager.sessionCode = "NSSF-WA-" + strings.ToUpper(randomHex(6))
+	waManager.qrLoopActive = true
+	readyCh := make(chan struct{})
+	waManager.firstQRCh = readyCh
+	waManager.mu.Unlock()
+
+	if oldClient != nil {
+		oldClient.Disconnect()
+	}
+
+	deviceStore, err := container.GetFirstDevice(context.Background())
+	if err != nil {
+		waManager.mu.Lock()
+		waManager.qrLoopActive = false
+		waManager.lastError = fmt.Sprintf("Failed to prepare WhatsApp device store: %v", err)
+		if waManager.firstQRCh == readyCh {
+			close(readyCh)
+			waManager.firstQRCh = nil
+		}
+		waManager.mu.Unlock()
+		return waManager.snapshot(cfg)
+	}
+
+	freshClient := waManager.newClientWithHandlers(deviceStore, deviceLabel)
+	qrCtx, qrCancel := context.WithCancel(context.Background())
+
+	waManager.mu.Lock()
+	waManager.client = freshClient
+	waManager.qrCancel = qrCancel
+	waManager.mu.Unlock()
+
+	qrChan, err := freshClient.GetQRChannel(qrCtx)
+	if err != nil {
+		qrCancel()
+		waManager.mu.Lock()
+		waManager.qrLoopActive = false
+		waManager.lastError = fmt.Sprintf("Failed to open WhatsApp QR channel: %v", err)
+		if waManager.firstQRCh == readyCh {
+			close(readyCh)
+			waManager.firstQRCh = nil
+		}
+		waManager.mu.Unlock()
+		return waManager.snapshot(cfg)
+	}
+
+	if err := freshClient.Connect(); err != nil {
+		qrCancel()
+		waManager.mu.Lock()
+		waManager.qrLoopActive = false
+		waManager.lastError = fmt.Sprintf("WhatsApp Web connection failed: %v", err)
+		if waManager.firstQRCh == readyCh {
+			close(readyCh)
+			waManager.firstQRCh = nil
+		}
+		waManager.mu.Unlock()
+		return waManager.snapshot(cfg)
+	}
+
+	go func(c *whatsmeow.Client, ch <-chan whatsmeow.QRChannelItem, firstCh chan struct{}, label string) {
+		signalReady := func() {
+			waManager.mu.Lock()
+			if waManager.firstQRCh == firstCh {
+				close(firstCh)
+				waManager.firstQRCh = nil
+			}
+			waManager.mu.Unlock()
+		}
+
+		for evt := range ch {
+			switch evt.Event {
+			case "code":
+				svg := GenerateQRSvg(evt.Code)
+				waManager.mu.Lock()
+				waManager.qrPayload = evt.Code
+				waManager.qrSvg = svg
+				waManager.lastError = ""
+				code := waManager.sessionCode
+				waManager.mu.Unlock()
+
+				_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
+					SessionCode:     code,
+					QRPayload:       evt.Code,
+					QRSvg:           svg,
+					Paired:          false,
+					DeviceName:      label,
+					BridgeURL:       "whatsmeow://native",
+					BridgeReachable: true,
+				})
+				signalReady()
+				log.Printf("[WHATSAPP] Generated fresh whatsmeow QR code (session=%s)", code)
+
+			case "success":
+				phone := ""
+				if c.Store != nil && c.Store.ID != nil {
+					phone = c.Store.ID.User
 				}
-				if json.NewDecoder(resp.Body).Decode(&bridgeResp) == nil {
-					code := defaultStr(bridgeResp.SessionCode, baseCode)
-					payload := strings.TrimSpace(bridgeResp.QRText)
-					svg := strings.TrimSpace(bridgeResp.QRSvg)
-					if svg == "" && payload != "" {
-						svg = GenerateQRSvg(payload)
-					}
-					phone := defaultStr(bridgeResp.PairedPhone, bridgeResp.Phone)
-					pairedAt := ""
-					if bridgeResp.Paired {
-						if existing != nil && existing.PairedAt != "" {
-							pairedAt = existing.PairedAt
-						} else {
-							pairedAt = time.Now().Format("2006-01-02 15:04:05")
-						}
-					}
-					saved, _ := SaveWhatsAppSession(WhatsAppSessionRecord{
-						SessionCode:     code,
-						QRPayload:       payload,
-						QRSvg:           svg,
-						Paired:          bridgeResp.Paired,
-						DeviceName:      cfg.WhatsAppDeviceName,
-						BridgeURL:       cfg.WhatsAppBridgeURL,
-						BridgeReachable: true,
-						PairedPhone:     phone,
-						PairedAt:        pairedAt,
-					})
-					if saved != nil {
-						return WhatsAppQRResponse{
-							Paired:          saved.Paired,
-							BridgeReachable: saved.BridgeReachable,
-							SessionCode:     saved.SessionCode,
-							QRSvg:           saved.QRSvg,
-							DeviceName:      saved.DeviceName,
-							BridgeURL:       saved.BridgeURL,
-							PairedPhone:     saved.PairedPhone,
-							PairedAt:        saved.PairedAt,
-						}
-					}
+				waManager.handlePaired(phone)
+				return
+
+			case "timeout":
+				waManager.mu.Lock()
+				waManager.qrLoopActive = false
+				waManager.qrPayload = ""
+				waManager.qrSvg = ""
+				if !waManager.paired {
+					waManager.lastError = "WhatsApp QR code timed out before scanning. Click Refresh QR to generate a new code."
 				}
+				waManager.mu.Unlock()
+				signalReady()
+				return
+
+			default:
+				waManager.mu.Lock()
+				waManager.qrLoopActive = false
+				if evt.Error != nil {
+					waManager.lastError = fmt.Sprintf("WhatsApp pairing error: %v", evt.Error)
+				} else if evt.Event != "" && !waManager.paired {
+					waManager.lastError = fmt.Sprintf("WhatsApp pairing ended: %s", evt.Event)
+				}
+				waManager.mu.Unlock()
+				signalReady()
 			}
 		}
+
+		waManager.mu.Lock()
+		waManager.qrLoopActive = false
+		waManager.mu.Unlock()
+		signalReady()
+	}(freshClient, qrChan, readyCh, deviceLabel)
+
+	select {
+	case <-readyCh:
+	case <-time.After(6 * time.Second):
 	}
 
-	if existing != nil && existing.Paired {
-		return WhatsAppQRResponse{
-			Paired:          true,
-			BridgeReachable: false,
-			SessionCode:     existing.SessionCode,
-			QRSvg:           "",
-			DeviceName:      cfg.WhatsAppDeviceName,
-			BridgeURL:       cfg.WhatsAppBridgeURL,
-			PairedPhone:     existing.PairedPhone,
-			PairedAt:        existing.PairedAt,
+	return waManager.snapshot(cfg)
+}
+
+func ReconnectWhatsApp(cfg AppSettings) WhatsAppQRResponse {
+	if err := waManager.ensureInitialized(cfg); err != nil {
+		return FetchWhatsAppQR(cfg, false)
+	}
+
+	waManager.mu.Lock()
+	client := waManager.client
+	paired := client != nil && client.Store != nil && client.Store.ID != nil
+	waManager.mu.Unlock()
+
+	if !paired {
+		return FetchWhatsAppQR(cfg, false)
+	}
+
+	if !client.IsConnected() {
+		if err := client.Connect(); err != nil {
+			waManager.mu.Lock()
+			waManager.lastError = fmt.Sprintf("Reconnect failed: %v", err)
+			waManager.mu.Unlock()
+		} else {
+			client.WaitForConnection(5 * time.Second)
 		}
 	}
-
-	return WhatsAppQRResponse{
-		Paired:          false,
-		BridgeReachable: false,
-		SessionCode:     baseCode,
-		QRSvg:           "",
-		DeviceName:      cfg.WhatsAppDeviceName,
-		BridgeURL:       cfg.WhatsAppBridgeURL,
-		Error: fmt.Sprintf(
-			"No WhatsApp Web gateway reachable at %s. Start a WhatsApp gateway sidecar at that URL to generate a live pairing QR code.",
-			defaultStr(cfg.WhatsAppBridgeURL, "http://127.0.0.1:8095"),
-		),
-	}
+	return waManager.snapshot(cfg)
 }
 
 func ConfirmWhatsAppPairingInDB(cfg AppSettings, sessionCode, pairedPhone string) *WhatsAppQRResponse {
-	existing, _ := GetWhatsAppSession()
-	if existing == nil {
-		return nil
-	}
-	if sessionCode != "" && existing.SessionCode != sessionCode {
-		return nil
-	}
-	phone := pairedPhone
-	if phone == "" {
-		phone = existing.PairedPhone
-	}
-	pairedAt := existing.PairedAt
-	if pairedAt == "" {
-		pairedAt = time.Now().Format("2006-01-02 15:04:05")
-	}
-	saved, _ := SaveWhatsAppSession(WhatsAppSessionRecord{
-		SessionCode:     existing.SessionCode,
-		QRPayload:       existing.QRPayload,
-		QRSvg:           existing.QRSvg,
-		Paired:          true,
-		DeviceName:      cfg.WhatsAppDeviceName,
-		BridgeURL:       cfg.WhatsAppBridgeURL,
-		BridgeReachable: existing.BridgeReachable,
-		PairedPhone:     phone,
-		PairedAt:        pairedAt,
-	})
-	if saved == nil {
-		return nil
-	}
-	return &WhatsAppQRResponse{
-		Paired:          saved.Paired,
-		BridgeReachable: saved.BridgeReachable,
-		SessionCode:     saved.SessionCode,
-		QRSvg:           saved.QRSvg,
-		DeviceName:      saved.DeviceName,
-		BridgeURL:       saved.BridgeURL,
-		PairedPhone:     saved.PairedPhone,
-		PairedAt:        saved.PairedAt,
-	}
+	snap := waManager.snapshot(cfg)
+	return &snap
 }
 
 func UnlinkWhatsAppSession(cfg AppSettings) WhatsAppQRResponse {
-	if parsed, err := url.Parse(cfg.WhatsAppBridgeURL); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
-		client := &http.Client{Timeout: 1500 * time.Millisecond}
-		_, _ = client.Post(strings.TrimRight(cfg.WhatsAppBridgeURL, "/")+"/logout", "application/json", nil)
+	_ = waManager.ensureInitialized(cfg)
+
+	waManager.mu.Lock()
+	if waManager.qrCancel != nil {
+		waManager.qrCancel()
+		waManager.qrCancel = nil
 	}
-	nextCode := "NSSF-WA-" + strings.ToUpper(randomHex(6))
+	client := waManager.client
+	container := waManager.container
+	deviceLabel := defaultStr(strings.TrimSpace(cfg.WhatsAppDeviceName), "NSSF Service Desk")
+	waManager.paired = false
+	waManager.connected = false
+	waManager.pairedPhone = ""
+	waManager.pairedAt = ""
+	waManager.qrPayload = ""
+	waManager.qrSvg = ""
+	waManager.qrLoopActive = false
+	waManager.lastError = ""
+	waManager.sessionCode = "NSSF-WA-" + strings.ToUpper(randomHex(6))
+	nextCode := waManager.sessionCode
+	waManager.mu.Unlock()
+
+	if client != nil {
+		if client.Store != nil && client.Store.ID != nil {
+			logoutCtx, cancelLogout := context.WithTimeout(context.Background(), 8*time.Second)
+			if err := client.Logout(logoutCtx); err != nil {
+				log.Printf("[WHATSAPP] Server logout returned %v; clearing local device store", err)
+			}
+			cancelLogout()
+		}
+		client.Disconnect()
+		if container != nil && client.Store != nil && client.Store.ID != nil {
+			delCtx, cancelDel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = container.DeleteDevice(delCtx, client.Store)
+			cancelDel()
+		}
+	}
+
+	if container != nil {
+		if freshStore, err := container.GetFirstDevice(context.Background()); err == nil {
+			freshClient := waManager.newClientWithHandlers(freshStore, deviceLabel)
+			waManager.mu.Lock()
+			waManager.client = freshClient
+			waManager.mu.Unlock()
+		}
+	}
+
 	_, _ = SaveWhatsAppSession(WhatsAppSessionRecord{
 		SessionCode:     nextCode,
 		QRPayload:       "",
 		QRSvg:           "",
 		Paired:          false,
-		DeviceName:      cfg.WhatsAppDeviceName,
-		BridgeURL:       cfg.WhatsAppBridgeURL,
+		DeviceName:      deviceLabel,
+		BridgeURL:       "whatsmeow://native",
 		BridgeReachable: false,
 	})
+
 	return FetchWhatsAppQR(cfg, true)
+}
+
+func normalizeWhatsAppPhone(raw string) (string, error) {
+	var b strings.Builder
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	digits := b.String()
+	if strings.HasPrefix(digits, "00") && len(digits) > 4 {
+		digits = digits[2:]
+	}
+	if len(digits) == 10 && strings.HasPrefix(digits, "0") {
+		digits = "254" + digits[1:]
+	} else if len(digits) == 9 && (strings.HasPrefix(digits, "7") || strings.HasPrefix(digits, "1")) {
+		digits = "254" + digits
+	}
+	if len(digits) < 10 || len(digits) > 15 {
+		return "", fmt.Errorf("invalid WhatsApp phone number format")
+	}
+	return digits, nil
 }
 
 func SendWhatsAppStatement(cfg AppSettings, phone string, meta *StatementMeta, renamedFile string, encryptedPDF []byte, rawPassword string) error {
@@ -557,27 +662,84 @@ func SendWhatsAppStatement(cfg AppSettings, phone string, meta *StatementMeta, r
 		return fmt.Errorf("WhatsApp dispatch is currently disabled in system settings")
 	}
 
-	parsed, err := url.Parse(cfg.WhatsAppBridgeURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return fmt.Errorf("invalid WhatsApp gateway URL")
+	if err := waManager.ensureInitialized(cfg); err != nil {
+		return fmt.Errorf("WhatsApp client unavailable: %w", err)
 	}
 
-	_, _, _, whatsappText, _ := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
-	payload, _ := json.Marshal(map[string]string{
-		"phone":          phone,
-		"filename":       renamedFile,
-		"caption":        whatsappText,
-		"documentBase64": base64.StdEncoding.EncodeToString(encryptedPDF),
-	})
+	waManager.mu.Lock()
+	client := waManager.client
+	waManager.mu.Unlock()
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(strings.TrimRight(cfg.WhatsAppBridgeURL, "/")+"/send-document", "application/json", bytes.NewReader(payload))
+	if client == nil || client.Store == nil || client.Store.ID == nil {
+		return fmt.Errorf("WhatsApp desk device is not paired. Open Settings -> WhatsApp QR Setup and scan the QR code first")
+	}
+
+	if !client.IsConnected() {
+		if err := client.Connect(); err != nil {
+			return fmt.Errorf("WhatsApp connection error: %w", err)
+		}
+		if !client.WaitForConnection(10 * time.Second) {
+			return fmt.Errorf("WhatsApp Web client timed out connecting; check server connectivity or re-pair in Settings")
+		}
+	}
+
+	digits, err := normalizeWhatsAppPhone(phone)
 	if err != nil {
-		return fmt.Errorf("WhatsApp gateway unreachable: %w", err)
+		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("WhatsApp dispatch failed with HTTP status %d", resp.StatusCode)
+
+	targetJID := types.NewJID(digits, types.DefaultUserServer)
+	checkCtx, cancelCheck := context.WithTimeout(context.Background(), 10*time.Second)
+	checkRes, checkErr := client.IsOnWhatsApp(checkCtx, []string{"+" + digits})
+	cancelCheck()
+	if checkErr == nil && len(checkRes) > 0 {
+		if !checkRes[0].IsIn {
+			return fmt.Errorf("number +%s is not registered on WhatsApp", digits)
+		}
+		if checkRes[0].JID.User != "" {
+			targetJID = checkRes[0].JID
+		}
 	}
+
+	_, _, _, whatsappText, _ := BuildOfficialNSSFMessage(
+		meta,
+		renamedFile,
+		cfg.PasswordMode,
+		cfg.PortalURL,
+		rawPassword,
+		cfg.EmailSubjectTemplate,
+		cfg.WhatsAppMessageTemplate,
+	)
+
+	uploadCtx, cancelUpload := context.WithTimeout(context.Background(), 30*time.Second)
+	uploaded, err := client.Upload(uploadCtx, encryptedPDF, whatsmeow.MediaDocument)
+	cancelUpload()
+	if err != nil {
+		return fmt.Errorf("WhatsApp media upload failed: %w", err)
+	}
+
+	docMsg := &waE2E.DocumentMessage{
+		URL:           proto.String(uploaded.URL),
+		DirectPath:    proto.String(uploaded.DirectPath),
+		MediaKey:      uploaded.MediaKey,
+		Mimetype:      proto.String("application/pdf"),
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uploaded.FileLength),
+		FileName:      proto.String(renamedFile),
+		Title:         proto.String(renamedFile),
+		Caption:       proto.String(whatsappText),
+	}
+
+	sendCtx, cancelSend := context.WithTimeout(context.Background(), 20*time.Second)
+	resp, err := client.SendMessage(sendCtx, targetJID, &waE2E.Message{
+		DocumentMessage: docMsg,
+	})
+	cancelSend()
+	if err != nil {
+		return fmt.Errorf("WhatsApp message send failed: %w", err)
+	}
+
+	log.Printf("[WHATSAPP] Dispatched %s to +%s (msgID=%s)", renamedFile, targetJID.User, resp.ID)
 	return nil
 }

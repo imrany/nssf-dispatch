@@ -16,7 +16,9 @@ function delayStyle(ms: number): CSSProperties {
 }
 
 export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
-  const [previewTab, setPreviewTab] = useState<'email' | 'text'>('email');
+  const [previewTab, setPreviewTab] = useState<'email' | 'text'>(
+    receipt.channel === 'WHATSAPP' ? 'text' : 'email'
+  );
 
   return (
     <div className="py-4 sm:py-8 space-y-8">
@@ -128,7 +130,7 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
           className="dispatch-animate-up border border-amber-200 bg-amber-50 rounded-md px-4 py-3 text-xs text-amber-900"
           style={delayStyle(190)}
         >
-          Packaged in Preview Mode: the PDF has been RC4-128 encrypted, renamed, and logged to SQLite. Switch to Live SMTP &amp; WhatsApp Gateway in Settings when ready to transmit externally.
+          Packaged in Preview Mode: the PDF has been RC4-128 encrypted, renamed, and logged to SQLite. Switch to Live SMTP &amp; WhatsApp in Settings when ready to transmit externally.
         </div>
       )}
 

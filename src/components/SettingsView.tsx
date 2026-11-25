@@ -128,6 +128,7 @@ export function SettingsView({
   const [qrData, setQrData] = useState<WhatsAppQrData | null>(null);
   const [loadingQr, setLoadingQr] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
 
   const [runtimeInfo, setRuntimeInfo] = useState<SystemRuntimeInfo | null>(null);
 
@@ -151,7 +152,6 @@ export function SettingsView({
       form.emailEnabled !== settings.emailEnabled ||
       form.whatsappEnabled !== settings.whatsappEnabled ||
       form.deliveryMode !== settings.deliveryMode ||
-      form.whatsappBridgeUrl !== settings.whatsappBridgeUrl ||
       form.whatsappDeviceName !== settings.whatsappDeviceName ||
       form.filenameTemplate !== settings.filenameTemplate ||
       form.passwordMode !== settings.passwordMode ||
@@ -208,25 +208,38 @@ export function SettingsView({
           onAuthExpired();
           return;
         }
-        if (!res.ok) throw new Error('Unable to load WhatsApp QR code');
         const data = (await res.json()) as WhatsAppQrData & { settings?: AppSettings };
+        if (!res.ok) {
+          throw new Error(data?.error || 'Unable to load WhatsApp QR code');
+        }
         setQrData(data);
         if (data.settings && data.settings.whatsappPaired !== settings.whatsappPaired) {
           onSettingsUpdated(data.settings);
         }
-        if (refresh) {
+        if (refresh && data.qrSvg) {
           toast.success('WhatsApp QR refreshed', 'Scan the new QR code using WhatsApp Linked Devices.');
+        } else if (refresh && data.error) {
+          toast.error('WhatsApp connection notice', data.error);
         }
-      } catch {
-        setQrData(null);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Could not fetch WhatsApp QR code from Go server.';
+        setQrData((prev) => ({
+          paired: prev?.paired ?? false,
+          connected: false,
+          bridgeReachable: false,
+          sessionCode: prev?.sessionCode ?? 'N/A',
+          qrSvg: '',
+          deviceName: form.whatsappDeviceName,
+          error: msg,
+        }));
         if (refresh) {
-          toast.error('QR refresh failed', 'Could not fetch a new WhatsApp QR code from server.');
+          toast.error('QR refresh failed', msg);
         }
       } finally {
         setLoadingQr(false);
       }
     },
-    [adminToken, onAuthExpired, onSettingsUpdated, settings.whatsappPaired]
+    [adminToken, form.whatsappDeviceName, onAuthExpired, onSettingsUpdated, settings.whatsappPaired]
   );
 
   const loadRuntime = useCallback(async () => {
@@ -249,10 +262,8 @@ export function SettingsView({
     loadRuntime();
   }, [loadQr, loadRuntime]);
 
-  // Poll /api/whatsapp/status every 5 seconds while device is not yet paired
+  // Poll /api/whatsapp/status fast (2.5s) while awaiting QR scan, slower (15s) while paired
   useEffect(() => {
-    if (isPaired) return;
-
     let cancelled = false;
     const pollStatus = async () => {
       try {
@@ -267,14 +278,25 @@ export function SettingsView({
         const data = (await res.json()) as WhatsAppQrData & { settings?: AppSettings };
         if (cancelled) return;
         setQrData(data);
-        if (data.paired) {
+        if (data.paired && !isPaired) {
           if (data.settings) {
             onSettingsUpdated(data.settings);
           }
           setForm((prev) => ({ ...prev, whatsappPaired: true }));
           toast.success(
             'WhatsApp device paired',
-            'Linked device session confirmed and stored in SQLite.'
+            data.pairedPhone
+              ? `Linked +${data.pairedPhone} via native whatsmeow client.`
+              : 'Linked device session confirmed and stored.'
+          );
+        } else if (!data.paired && isPaired) {
+          if (data.settings) {
+            onSettingsUpdated(data.settings);
+          }
+          setForm((prev) => ({ ...prev, whatsappPaired: false }));
+          toast.warning(
+            'WhatsApp device unlinked',
+            'Session was disconnected from the phone. Scan a new QR code to re-link.'
           );
         }
       } catch {
@@ -282,7 +304,7 @@ export function SettingsView({
       }
     };
 
-    const timer = setInterval(pollStatus, 5000);
+    const timer = setInterval(pollStatus, isPaired ? 15000 : 2500);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -463,6 +485,36 @@ export function SettingsView({
       toast.error('SMTP test failed', text);
     } finally {
       setTestingSmtp(false);
+    }
+  };
+
+  const handleReconnectWhatsApp = async () => {
+    setReconnecting(true);
+    try {
+      const res = await fetch('/api/whatsapp/reconnect', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (res.status === 401) {
+        onAuthExpired();
+        return;
+      }
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        if (data.qrData) setQrData(data.qrData);
+        if (data.settings) onSettingsUpdated(data.settings);
+        if (data.qrData?.connected) {
+          toast.success('WhatsApp connected', 'Native whatsmeow WebSocket is online.');
+        } else {
+          toast.warning('WhatsApp reconnecting', data.qrData?.error || 'Connection attempt initiated.');
+        }
+      } else {
+        toast.error('Reconnect failed', data.error || 'Unable to reconnect WhatsApp session.');
+      }
+    } catch {
+      toast.error('Network error', 'Unable to reach Go server to reconnect WhatsApp.');
+    } finally {
+      setReconnecting(false);
     }
   };
 
@@ -666,7 +718,7 @@ export function SettingsView({
                 className="w-full px-2.5 py-1.5 rounded border border-slate-300 text-xs font-medium text-slate-800 focus:outline-none focus:border-[#006837]"
               >
                 <option value="preview">Service Desk Preview &amp; Package (Local)</option>
-                <option value="live">Live SMTP &amp; WhatsApp Gateway</option>
+                <option value="live">Live SMTP &amp; WhatsApp (whatsmeow)</option>
               </select>
             </div>
           </div>
@@ -853,9 +905,9 @@ export function SettingsView({
                       <div className="space-y-1 font-mono text-[11px] text-slate-500">
                         <div>Session: {qrData.sessionCode}</div>
                         <div className="font-sans text-[11px] text-slate-500">
-                          {qrData.bridgeReachable && qrDataUri
-                            ? 'Connected to WhatsApp Web · Scan with Linked Devices'
-                            : 'WhatsApp Web gateway not connected yet'}
+                          {qrDataUri
+                            ? 'Live whatsmeow QR active · Scan with WhatsApp Linked Devices'
+                            : 'Waiting for WhatsApp Web QR stream from Go server'}
                         </div>
                       </div>
                     )}
@@ -880,13 +932,20 @@ export function SettingsView({
                   <div className="flex items-center gap-2">
                     <Smartphone className="w-4 h-4 text-[#006837]" aria-hidden="true" />
                     <h2 className="font-display text-base font-semibold text-[#006837]">
-                      Remove WhatsApp Paired Device
+                      WhatsApp Paired Device
                     </h2>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#006837]">
-                    <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Connected</span>
-                  </span>
+                  {qrData?.connected === false ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700">
+                      <AlertCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Reconnecting</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#006837]">
+                      <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Connected</span>
+                    </span>
+                  )}
                 </div>
 
                 <div className="border border-emerald-200 bg-emerald-50/50 rounded-md p-4 space-y-3">
@@ -899,7 +958,7 @@ export function SettingsView({
                         {qrData?.deviceName || form.whatsappDeviceName}
                       </div>
                       <div className="text-slate-600">
-                        Active WhatsApp session linked and stored in SQLite.
+                        Native <span className="font-mono">whatsmeow</span> multi-device session stored locally.
                       </div>
                     </div>
                   </div>
@@ -916,37 +975,48 @@ export function SettingsView({
                         {qrData?.pairedPhone ? 'Linked Phone' : 'Paired Timestamp'}
                       </div>
                       <div className="font-mono font-semibold text-[#0F2437] mt-0.5">
-                        {qrData?.pairedPhone || qrData?.pairedAt || 'Active'}
+                        {qrData?.pairedPhone ? `+${qrData.pairedPhone}` : qrData?.pairedAt || 'Active'}
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleUnlinkDevice}
-                  disabled={unlinking}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-red-300 bg-white text-xs font-bold uppercase tracking-wider text-red-700 hover:bg-red-50 disabled:opacity-50 cursor-pointer transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>
-                    {unlinking ? 'Removing Paired Device...' : 'Remove WhatsApp Paired Device'}
-                  </span>
-                </button>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  {qrData?.connected === false && (
+                    <button
+                      type="button"
+                      onClick={handleReconnectWhatsApp}
+                      disabled={reconnecting}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-[#2B7A3B] bg-white text-xs font-bold uppercase tracking-wider text-[#1E6B34] hover:bg-emerald-50 disabled:opacity-50 cursor-pointer transition-colors"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${reconnecting ? 'animate-spin' : ''}`} aria-hidden="true" />
+                      <span>{reconnecting ? 'Connecting...' : 'Reconnect'}</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleUnlinkDevice}
+                    disabled={unlinking}
+                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-red-300 bg-white text-xs font-bold uppercase tracking-wider text-red-700 hover:bg-red-50 disabled:opacity-50 cursor-pointer transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>
+                      {unlinking ? 'Removing Paired Device...' : 'Remove Paired Device'}
+                    </span>
+                  </button>
+                </div>
               </>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
               <div>
-                <label htmlFor="wa-bridge" className="block text-xs font-medium text-slate-700 mb-1">
-                  WhatsApp Gateway URL
-                </label>
-                <input
-                  id="wa-bridge"
-                  value={form.whatsappBridgeUrl}
-                  onChange={(e) => setForm({ ...form, whatsappBridgeUrl: e.target.value })}
-                  className="w-full px-3 py-1.5 rounded border border-slate-300 text-xs font-mono focus:outline-none focus:border-[#006837]"
-                />
+                <div className="block text-xs font-medium text-slate-700 mb-1">
+                  WhatsApp Client Engine
+                </div>
+                <div className="w-full px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-xs font-mono text-slate-600">
+                  Built-in Go (whatsmeow)
+                </div>
               </div>
               <div>
                 <label htmlFor="wa-device" className="block text-xs font-medium text-slate-700 mb-1">

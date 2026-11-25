@@ -21,6 +21,7 @@ fi
 
 echo "[4/4] Building standalone zero-dependency Go binaries..."
 cd "$GO_DIR"
+go mod tidy
 mkdir -p release
 
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \

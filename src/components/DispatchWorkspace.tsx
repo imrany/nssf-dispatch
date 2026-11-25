@@ -394,7 +394,7 @@ export function DispatchWorkspace({
         <div className="text-xs text-slate-500 flex items-center gap-2">
           <span>
             {settings.deliveryMode === 'live'
-              ? 'Live SMTP & WhatsApp Gateway'
+              ? 'Live SMTP & WhatsApp'
               : 'Preview Mode'}
           </span>
           <span aria-hidden="true">·</span>
@@ -428,6 +428,30 @@ export function DispatchWorkspace({
           </motion.button>
         </div>
       )}
+
+      {settings.deliveryMode === 'live' &&
+        settings.whatsappEnabled &&
+        !settings.whatsappPaired &&
+        (step === 'select' || channel === 'whatsapp' || channel === 'both') && (
+          <div className="border border-amber-300 bg-amber-50 rounded-md p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3 text-sm text-amber-900">
+              <AlertCircle className="w-5 h-5 text-amber-700 shrink-0" aria-hidden="true" />
+              <span>
+                Live mode is active, but no WhatsApp device is paired yet. Open Settings and scan the WhatsApp QR code before sending live WhatsApp statements.
+              </span>
+            </div>
+            <motion.button
+              type="button"
+              whileHover={{ y: -1 }}
+              whileTap={{ scale: 0.98 }}
+              transition={{ duration: 0.14, ease: SMOOTH_EASE }}
+              onClick={onOpenSettings}
+              className="px-4 py-2 rounded bg-[#2B7A3B] text-white text-xs font-semibold hover:bg-[#236530] whitespace-nowrap cursor-pointer shrink-0"
+            >
+              PAIR WHATSAPP
+            </motion.button>
+          </div>
+        )}
 
       <AnimatePresence mode="wait" initial={false}>
         {/* STEP 1: SELF SERVICE CHANNEL SELECTION CARDS (matches screenshots 1 & 2) */}

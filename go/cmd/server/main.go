@@ -77,6 +77,10 @@ func main() {
 		log.Fatalf("Database init failed: %v", err)
 	}
 
+	if startupCfg, err := GetRawSettings(); err == nil {
+		InitWhatsApp(startupCfg)
+	}
+
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = "8080"
@@ -472,7 +476,9 @@ func main() {
 		pub, _ := GetPublicSettings()
 		writeJSON(w, 200, map[string]any{
 			"paired":          qrData.Paired,
+			"connected":       qrData.Connected,
 			"bridgeReachable": qrData.BridgeReachable,
+			"engine":          qrData.Engine,
 			"sessionCode":     qrData.SessionCode,
 			"qrSvg":           qrData.QRSvg,
 			"deviceName":      qrData.DeviceName,
@@ -490,7 +496,9 @@ func main() {
 		pub, _ := GetPublicSettings()
 		writeJSON(w, 200, map[string]any{
 			"paired":          qrData.Paired,
+			"connected":       qrData.Connected,
 			"bridgeReachable": qrData.BridgeReachable,
+			"engine":          qrData.Engine,
 			"sessionCode":     qrData.SessionCode,
 			"qrSvg":           qrData.QRSvg,
 			"deviceName":      qrData.DeviceName,
@@ -499,6 +507,21 @@ func main() {
 			"pairedAt":        qrData.PairedAt,
 			"error":           qrData.Error,
 			"settings":        pub,
+		})
+	}))
+
+	mux.HandleFunc("/api/whatsapp/reconnect", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		cfg, _ := GetRawSettings()
+		qrData := ReconnectWhatsApp(cfg)
+		pub, _ := GetPublicSettings()
+		writeJSON(w, 200, map[string]any{
+			"ok":       true,
+			"qrData":   qrData,
+			"settings": pub,
 		})
 	}))
 

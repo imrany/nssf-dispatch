@@ -18,7 +18,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   emailEnabled: true,
   whatsappEnabled: true,
   deliveryMode: 'preview',
-  whatsappBridgeUrl: 'http://127.0.0.1:8095',
+  whatsappBridgeUrl: 'whatsmeow://native',
   whatsappPaired: false,
   whatsappDeviceName: 'NSSF Service Desk Terminal 01',
   filenameTemplate: 'NSSF_Statement_{memberNo}_{date}.pdf',
@@ -68,6 +68,17 @@ export default function App() {
     setActiveTab(tab);
     if (tab !== 'dispatch') {
       setReceipt(null);
+    } else {
+      fetch('/api/settings', {
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && typeof data.emailEnabled === 'boolean') {
+            setSettings((prev) => ({ ...prev, ...data }));
+          }
+        })
+        .catch(() => {});
     }
   };
 
