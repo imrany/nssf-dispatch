@@ -1,0 +1,6 @@
+{
+  "name": "NSSF Digital — Member Statement Dispatch",
+  "description": "NSSF staff portal for validating, password-protecting, and securely dispatching member statements via Email and WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

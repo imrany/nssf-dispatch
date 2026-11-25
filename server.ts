@@ -1,0 +1,473 @@
+import express from 'express';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createServer as createViteServer } from 'vite';
+import {
+  getAuditLogs,
+  getPublicSettings,
+  getRawSettings,
+  initDb,
+  insertAuditLog,
+  saveSettings,
+} from './server/db.ts';
+import { buildOfficialNssfMessage, sendEmailStatement, testSmtpConnection } from './server/mailer.ts';
+import { encryptPdfWithPassword, extractAndValidatePdf } from './server/pdfEngine.ts';
+import { fetchWhatsAppQr, sendWhatsAppStatement } from './server/whatsapp.ts';
+
+interface MultipartResult {
+  fields: Record<string, string>;
+  files: Record<string, { filename: string; contentType: string; data: Buffer }>;
+}
+
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15 MB
+
+function parseMultipart(req: express.Request): Promise<MultipartResult> {
+  return new Promise((resolve, reject) => {
+    const contentType = req.headers['content-type'] || '';
+    const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    if (!boundaryMatch) {
+      reject(new Error('Missing multipart/form-data boundary'));
+      return;
+    }
+    const boundary = boundaryMatch[1] || boundaryMatch[2];
+    const boundaryBuf = Buffer.from(`--${boundary}`, 'latin1');
+
+    const chunks: Buffer[] = [];
+    let total = 0;
+
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_UPLOAD_BYTES) {
+        req.destroy();
+        reject(new Error('Uploaded statement exceeds 15 MB limit.'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('error', reject);
+    req.on('end', () => {
+      const fullBuf = Buffer.concat(chunks);
+      const fields: Record<string, string> = {};
+      const files: Record<string, { filename: string; contentType: string; data: Buffer }> = {};
+
+      let pos = fullBuf.indexOf(boundaryBuf);
+      while (pos !== -1) {
+        const partStart = pos + boundaryBuf.length;
+        if (fullBuf.subarray(partStart, partStart + 2).toString('latin1') === '--') break;
+
+        // Skip CRLF after boundary
+        let headerStart = partStart;
+        if (fullBuf[headerStart] === 13 && fullBuf[headerStart + 1] === 10) headerStart += 2;
+
+        const nextBoundary = fullBuf.indexOf(boundaryBuf, headerStart);
+        if (nextBoundary === -1) break;
+
+        const headerEnd = fullBuf.indexOf('\r\n\r\n', headerStart);
+        if (headerEnd === -1 || headerEnd > nextBoundary) {
+          pos = nextBoundary;
+          continue;
+        }
+
+        const headerStr = fullBuf.subarray(headerStart, headerEnd).toString('utf8');
+        let bodyEnd = nextBoundary;
+        if (fullBuf[bodyEnd - 2] === 13 && fullBuf[bodyEnd - 1] === 10) bodyEnd -= 2;
+        const bodyBuf = fullBuf.subarray(headerEnd + 4, bodyEnd);
+
+        const nameMatch = headerStr.match(/name="([^"]+)"/i);
+        const filenameMatch = headerStr.match(/filename="([^"]*)"/i);
+        const typeMatch = headerStr.match(/Content-Type:\s*([^\r\n]+)/i);
+
+        if (nameMatch) {
+          const fieldName = nameMatch[1];
+          if (filenameMatch) {
+            files[fieldName] = {
+              filename: filenameMatch[1] || 'statement.pdf',
+              contentType: typeMatch?.[1]?.trim() || 'application/pdf',
+              data: bodyBuf,
+            };
+          } else {
+            fields[fieldName] = bodyBuf.toString('utf8');
+          }
+        }
+
+        pos = nextBoundary;
+      }
+
+      resolve({ fields, files });
+    });
+  });
+}
+
+// Ephemeral in-memory store for downloading freshly encrypted statement PDFs (auto-expires after 30 min)
+const protectedPdfCache = new Map<string, { filename: string; pdf: Buffer; expiresAt: number }>();
+
+function storeProtectedPdf(filename: string, pdf: Buffer): string {
+  const now = Date.now();
+  for (const [k, v] of protectedPdfCache.entries()) {
+    if (v.expiresAt < now) protectedPdfCache.delete(k);
+  }
+  const token = crypto.randomBytes(16).toString('hex');
+  protectedPdfCache.set(token, { filename, pdf, expiresAt: now + 30 * 60 * 1000 });
+  return token;
+}
+
+function formatDateCompact(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
+}
+
+function buildRenamedFile(template: string, memberNo: string): string {
+  const safeMember = memberNo.replace(/[^A-Za-z0-9_-]/g, '');
+  const compactDate = formatDateCompact(new Date());
+  const raw = (template || 'NSSF_Statement_{memberNo}_{date}.pdf')
+    .replace(/\{memberNo\}/gi, safeMember)
+    .replace(/\{date\}/gi, compactDate);
+  const safeName = raw.replace(/[^A-Za-z0-9_.-]/g, '_');
+  return safeName.toLowerCase().endsWith('.pdf') ? safeName : `${safeName}.pdf`;
+}
+
+async function startServer() {
+  initDb();
+
+  const app = express();
+  app.use(express.json({ limit: '2mb' }));
+
+  // 1. Validate PDF against entered Member NSSF Number
+  app.post('/api/validate', async (req, res) => {
+    try {
+      const { fields, files } = await parseMultipart(req);
+      const memberNo = (fields.memberNo || '').trim();
+      const file = files.statement;
+      if (!file || file.data.length === 0) {
+        res.status(400).json({ ok: false, error: 'Please upload a member statement PDF.' });
+        return;
+      }
+
+      const meta = extractAndValidatePdf(file.data, memberNo);
+      const cfg = getRawSettings();
+      const renamedFile = buildRenamedFile(cfg.filenameTemplate, meta.memberNo);
+
+      res.json({
+        ok: true,
+        meta: {
+          ...meta,
+          maskedIdCardNo: meta.idCardNo.length > 3 ? '*'.repeat(meta.idCardNo.length - 3) + meta.idCardNo.slice(-3) : '***',
+        },
+        renamedFile,
+      });
+    } catch (err) {
+      res.status(422).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Unable to validate uploaded PDF.',
+      });
+    }
+  });
+
+  // 2. Validate, Password-Protect, Rename & Dispatch Member Statement
+  app.post('/api/dispatch', async (req, res) => {
+    let memberNo = '';
+    let channel = 'email';
+    let email = '';
+    let whatsapp = '';
+
+    try {
+      const { fields, files } = await parseMultipart(req);
+      memberNo = (fields.memberNo || '').trim();
+      channel = (fields.channel || 'email').trim();
+      email = (fields.email || '').trim();
+      whatsapp = (fields.whatsapp || '').trim();
+
+      if (!['email', 'whatsapp', 'both'].includes(channel)) {
+        res.status(400).json({ ok: false, error: 'Invalid dispatch channel selected.' });
+        return;
+      }
+
+      const file = files.statement;
+      if (!file || file.data.length === 0) {
+        res.status(400).json({ ok: false, error: 'Statement PDF upload is required.' });
+        return;
+      }
+
+      if ((channel === 'email' || channel === 'both') && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        res.status(400).json({ ok: false, error: 'Please enter a valid member email address.' });
+        return;
+      }
+
+      if ((channel === 'whatsapp' || channel === 'both') && whatsapp.replace(/[^\d]/g, '').length < 9) {
+        res.status(400).json({ ok: false, error: 'Please enter a valid member WhatsApp phone number.' });
+        return;
+      }
+
+      const cfg = getRawSettings();
+
+      if ((channel === 'email' || channel === 'both') && !cfg.emailEnabled) {
+        res.status(400).json({ ok: false, error: 'Email dispatch is disabled in System Settings.' });
+        return;
+      }
+      if ((channel === 'whatsapp' || channel === 'both') && !cfg.whatsappEnabled) {
+        res.status(400).json({ ok: false, error: 'WhatsApp dispatch is disabled in System Settings.' });
+        return;
+      }
+
+      // Step 1: Parse & validate statement against entered NSSF Member Number
+      let meta;
+      try {
+        meta = extractAndValidatePdf(file.data, memberNo);
+      } catch (valErr) {
+        const msg = valErr instanceof Error ? valErr.message : 'Validation failed';
+        insertAuditLog({
+          memberNo: memberNo || 'UNSPECIFIED',
+          memberName: 'UNVERIFIED',
+          channel: channel.toUpperCase(),
+          destination: [email, whatsapp].filter(Boolean).join(' / ') || '-',
+          renamedFile: file.filename,
+          status: 'VALIDATION_FAILED',
+          details: msg,
+        });
+        res.status(422).json({ ok: false, error: msg });
+        return;
+      }
+
+      // Step 2: Derive password from member credentials & encrypt PDF (RC4-128)
+      const rawPassword =
+        cfg.passwordMode === 'id_and_nssf_last4'
+          ? `${meta.idCardNo}${meta.memberNo.slice(-4)}`
+          : meta.idCardNo;
+
+      const encryptedPdf = encryptPdfWithPassword(file.data, rawPassword);
+      const renamedFile = buildRenamedFile(cfg.filenameTemplate, meta.memberNo);
+      const downloadToken = storeProtectedPdf(renamedFile, encryptedPdf);
+
+      const { subject, htmlBody, plainText, passwordGuide } = buildOfficialNssfMessage(
+        meta,
+        renamedFile,
+        cfg.passwordMode,
+        cfg.portalUrl,
+        rawPassword
+      );
+
+      // Step 3: Dispatch via Email and/or WhatsApp
+      const deliveredChannels: string[] = [];
+
+      if (channel === 'email' || channel === 'both') {
+        if (cfg.deliveryMode === 'live') {
+          try {
+            await sendEmailStatement(cfg, email, meta, renamedFile, encryptedPdf, rawPassword);
+            insertAuditLog({
+              memberNo: meta.memberNo,
+              memberName: meta.memberName,
+              channel: 'EMAIL',
+              destination: email,
+              renamedFile,
+              status: 'SENT',
+              details: `SMTP delivered via ${cfg.smtpHost}`,
+            });
+            deliveredChannels.push('EMAIL');
+          } catch (mailErr) {
+            const msg = mailErr instanceof Error ? mailErr.message : 'SMTP dispatch error';
+            insertAuditLog({
+              memberNo: meta.memberNo,
+              memberName: meta.memberName,
+              channel: 'EMAIL',
+              destination: email,
+              renamedFile,
+              status: 'FAILED',
+              details: msg,
+            });
+            res.status(502).json({ ok: false, error: msg });
+            return;
+          }
+        } else {
+          insertAuditLog({
+            memberNo: meta.memberNo,
+            memberName: meta.memberName,
+            channel: 'EMAIL',
+            destination: email,
+            renamedFile,
+            status: 'DISPATCHED (PREVIEW)',
+            details: 'Encrypted PDF & official NSSF email packaged in preview mode',
+          });
+          deliveredChannels.push('EMAIL');
+        }
+      }
+
+      if (channel === 'whatsapp' || channel === 'both') {
+        if (cfg.deliveryMode === 'live') {
+          try {
+            await sendWhatsAppStatement(cfg, whatsapp, meta, renamedFile, encryptedPdf, rawPassword);
+            insertAuditLog({
+              memberNo: meta.memberNo,
+              memberName: meta.memberName,
+              channel: 'WHATSAPP',
+              destination: whatsapp,
+              renamedFile,
+              status: 'SENT',
+              details: 'WhatsApp document dispatched via paired desk gateway',
+            });
+            deliveredChannels.push('WHATSAPP');
+          } catch (waErr) {
+            const msg = waErr instanceof Error ? waErr.message : 'WhatsApp dispatch error';
+            insertAuditLog({
+              memberNo: meta.memberNo,
+              memberName: meta.memberName,
+              channel: 'WHATSAPP',
+              destination: whatsapp,
+              renamedFile,
+              status: 'FAILED',
+              details: msg,
+            });
+            res.status(502).json({ ok: false, error: msg });
+            return;
+          }
+        } else {
+          insertAuditLog({
+            memberNo: meta.memberNo,
+            memberName: meta.memberName,
+            channel: 'WHATSAPP',
+            destination: whatsapp,
+            renamedFile,
+            status: 'DISPATCHED (PREVIEW)',
+            details: 'Encrypted PDF & WhatsApp caption packaged in preview mode',
+          });
+          deliveredChannels.push('WHATSAPP');
+        }
+      }
+
+      res.json({
+        ok: true,
+        deliveryMode: cfg.deliveryMode,
+        memberNo: meta.memberNo,
+        memberName: meta.memberName,
+        period: meta.period,
+        standardAmount: meta.standardAmount,
+        voluntaryAmount: meta.voluntaryAmount,
+        totalAmount: meta.totalAmount,
+        originalFilename: file.filename,
+        renamedFile,
+        channel: deliveredChannels.join(' & '),
+        destination: [email, whatsapp].filter(Boolean).join(' · '),
+        timestamp: new Date().toLocaleString('en-KE', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+        passwordGuide,
+        downloadUrl: `/api/download/${downloadToken}`,
+        emailPreview: {
+          subject,
+          htmlBody,
+          plainText,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Unexpected server error during dispatch.',
+      });
+    }
+  });
+
+  // 3. Download freshly encrypted PDF receipt copy
+  app.get('/api/download/:token', (req, res) => {
+    const entry = protectedPdfCache.get(req.params.token);
+    if (!entry || entry.expiresAt < Date.now()) {
+      res.status(404).json({ ok: false, error: 'Protected PDF link expired. Re-run dispatch to generate a new copy.' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${entry.filename}"`);
+    res.send(entry.pdf);
+  });
+
+  // 4. Settings Endpoints (SQLite backed)
+  app.get('/api/settings', (_req, res) => {
+    res.json(getPublicSettings());
+  });
+
+  app.post('/api/settings', (req, res) => {
+    saveSettings(req.body || {});
+    res.json({ ok: true, settings: getPublicSettings() });
+  });
+
+  app.post('/api/settings/test-smtp', async (req, res) => {
+    const current = getRawSettings();
+    const override = req.body || {};
+    const testCfg = {
+      ...current,
+      smtpHost: override.smtpHost ?? current.smtpHost,
+      smtpPort: String(override.smtpPort ?? current.smtpPort),
+      smtpSecurity: override.smtpSecurity ?? current.smtpSecurity,
+      smtpUser: override.smtpUser ?? current.smtpUser,
+      smtpPass:
+        typeof override.smtpPass === 'string' && override.smtpPass.length > 0
+          ? override.smtpPass
+          : current.smtpPass,
+      smtpFrom: override.smtpFrom ?? current.smtpFrom,
+    };
+
+    try {
+      await testSmtpConnection(testCfg);
+      res.json({ ok: true, message: `Authenticated successfully with ${testCfg.smtpHost}:${testCfg.smtpPort}` });
+    } catch (err) {
+      res.status(400).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'SMTP connection failed.',
+      });
+    }
+  });
+
+  // 5. WhatsApp QR Pairing Endpoints
+  app.get('/api/whatsapp/qr', async (_req, res) => {
+    const cfg = getRawSettings();
+    const qrData = await fetchWhatsAppQr(cfg);
+    res.json(qrData);
+  });
+
+  app.post('/api/whatsapp/pair', (req, res) => {
+    const paired = Boolean(req.body?.paired);
+    saveSettings({ whatsappPaired: paired });
+    res.json({ ok: true, paired, settings: getPublicSettings() });
+  });
+
+  // 6. Audit Logs Endpoint
+  app.get('/api/audit', (_req, res) => {
+    res.json(getAuditLogs(150));
+  });
+
+  // Vite middleware in dev, static dist in production
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distDir = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req, res) => {
+      const indexHtml = path.join(distDir, 'index.html');
+      if (fs.existsSync(indexHtml)) {
+        res.sendFile(indexHtml);
+      } else {
+        res.status(404).send('Frontend build not found.');
+      }
+    });
+  }
+
+  const PORT = 3000;
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`NSSF Digital Statement Dispatch running on http://localhost:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
