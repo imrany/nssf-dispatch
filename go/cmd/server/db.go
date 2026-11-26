@@ -35,6 +35,8 @@ type AppSettings struct {
 	PreviewBeforeDispatch   bool   `json:"previewBeforeDispatch"`
 	EmailSubjectTemplate    string `json:"emailSubjectTemplate"`
 	WhatsAppMessageTemplate string `json:"whatsappMessageTemplate"`
+	AutoUpdateEnabled       bool   `json:"autoUpdateEnabled"`
+	UpdateRepo              string `json:"updateRepo"`
 }
 
 const (
@@ -241,6 +243,8 @@ func defaultSettingsMap() map[string]string {
 		"previewBeforeDispatch":   "true",
 		"emailSubjectTemplate":    DefaultEmailSubjectTemplate,
 		"whatsappMessageTemplate": DefaultWhatsAppMessageTemplate,
+		"autoUpdateEnabled":       "true",
+		"updateRepo":              "",
 	}
 }
 
@@ -445,6 +449,8 @@ func settingsFromMap(m map[string]string, pairedOverride *bool) AppSettings {
 		PreviewBeforeDispatch:   m["previewBeforeDispatch"] != "false",
 		EmailSubjectTemplate:    defaultStr(m["emailSubjectTemplate"], DefaultEmailSubjectTemplate),
 		WhatsAppMessageTemplate: defaultStr(m["whatsappMessageTemplate"], DefaultWhatsAppMessageTemplate),
+		AutoUpdateEnabled:       m["autoUpdateEnabled"] != "false",
+		UpdateRepo:              defaultStr(strings.TrimSpace(m["updateRepo"]), defaultStr(strings.TrimSpace(os.Getenv("NSSF_UPDATE_REPO")), githubRepo)),
 	}
 }
 
@@ -509,6 +515,8 @@ func GetSafeWorkspaceSettings() AppSettings {
 		PreviewBeforeDispatch:   raw.PreviewBeforeDispatch,
 		EmailSubjectTemplate:    "",
 		WhatsAppMessageTemplate: "",
+		AutoUpdateEnabled:       raw.AutoUpdateEnabled,
+		UpdateRepo:              "",
 	}
 }
 
@@ -519,6 +527,11 @@ func SaveSettings(input AppSettings) error {
 		nextPass = ""
 	} else if input.SMTPPass != "" {
 		nextPass = input.SMTPPass
+	}
+
+	cleanUpdateRepo := normalizeRepoSlug(input.UpdateRepo)
+	if cleanUpdateRepo != "" && !githubRepoSlugRe.MatchString(cleanUpdateRepo) {
+		return fmt.Errorf("update repository must be in GitHub 'owner/repo' format")
 	}
 
 	pairs := map[string]string{
@@ -539,6 +552,8 @@ func SaveSettings(input AppSettings) error {
 		"previewBeforeDispatch":   fmt.Sprintf("%v", input.PreviewBeforeDispatch),
 		"emailSubjectTemplate":    defaultStr(strings.TrimSpace(input.EmailSubjectTemplate), DefaultEmailSubjectTemplate),
 		"whatsappMessageTemplate": defaultStr(strings.TrimSpace(input.WhatsAppMessageTemplate), DefaultWhatsAppMessageTemplate),
+		"autoUpdateEnabled":       fmt.Sprintf("%v", input.AutoUpdateEnabled),
+		"updateRepo":              cleanUpdateRepo,
 	}
 
 	if !hasSQLiteCLI() {

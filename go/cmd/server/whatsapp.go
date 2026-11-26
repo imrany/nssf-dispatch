@@ -103,6 +103,21 @@ func InitWhatsApp(cfg AppSettings) {
 	}
 }
 
+func ShutdownWhatsApp() {
+	waManager.mu.Lock()
+	cancel := waManager.qrCancel
+	client := waManager.client
+	waManager.qrCancel = nil
+	waManager.qrLoopActive = false
+	waManager.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil {
+		client.Disconnect()
+	}
+}
+
 func (m *whatsAppManager) ensureInitialized(cfg AppSettings) error {
 	m.initMu.Lock()
 	defer m.initMu.Unlock()

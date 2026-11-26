@@ -5,6 +5,7 @@ import type {
   DispatchChannel,
   DispatchReceipt,
   SystemRuntimeInfo,
+  SystemUpdateStatus,
   ValidationResponse,
   WhatsAppQrData,
 } from '../types';
@@ -83,6 +84,33 @@ export function testSmtpApi(
 
 export function fetchRuntimeApi(token?: string | null): Promise<SystemRuntimeInfo> {
   return requestJson<SystemRuntimeInfo>('/api/system/runtime', { token });
+}
+
+export function fetchUpdateStatusApi(token: string): Promise<SystemUpdateStatus> {
+  return requestJson<SystemUpdateStatus>('/api/system/update/status', { token });
+}
+
+export function checkForUpdatesApi(token: string): Promise<SystemUpdateStatus> {
+  return requestJson<SystemUpdateStatus>('/api/system/update/check', {
+    method: 'POST',
+    token,
+  });
+}
+
+export function applySelfUpdateApi(token: string): Promise<{
+  ok: boolean;
+  status: SystemUpdateStatus;
+  error?: string;
+  requiresElevation?: boolean;
+}> {
+  return requestJson('/api/system/update/apply', {
+    method: 'POST',
+    token,
+  });
+}
+
+export function fetchHealthApi(): Promise<{ ok: boolean; version?: string }> {
+  return requestJson<{ ok: boolean; version?: string }>('/api/health');
 }
 
 export function fetchAuthStatusApi(): Promise<AdminAuthStatus> {

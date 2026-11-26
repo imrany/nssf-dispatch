@@ -68,15 +68,52 @@ export interface AppSettings {
   previewBeforeDispatch: boolean;
   emailSubjectTemplate: string;
   whatsappMessageTemplate: string;
+  autoUpdateEnabled: boolean;
+  updateRepo: string;
 }
 
 export interface SystemRuntimeInfo {
   ok: boolean;
+  version?: string;
+  commit?: string;
+  buildDate?: string;
   activeEngine: 'go';
   goEngineInfo?: {
     engine?: string;
+    version?: string;
+    commit?: string;
+    buildDate?: string;
+    os?: string;
+    arch?: string;
     sqliteCliBackend?: boolean;
   };
+}
+
+export interface SystemUpdateStatus {
+  enabled: boolean;
+  repo: string;
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  state:
+    | 'idle'
+    | 'checking'
+    | 'up_to_date'
+    | 'available'
+    | 'downloading'
+    | 'applying'
+    | 'restarting'
+    | 'error'
+    | 'unconfigured';
+  message: string;
+  releaseUrl?: string;
+  releaseNotes?: string;
+  assetName?: string;
+  lastCheckedAt?: string;
+  canSelfUpdate: boolean;
+  selfUpdateHint?: string;
+  requiresElevation?: boolean;
+  restartScheduled?: boolean;
 }
 
 export interface WhatsAppQrData {

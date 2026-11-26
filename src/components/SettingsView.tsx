@@ -9,11 +9,21 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import type { AppSettings, PendingSettingsAction, SystemRuntimeInfo, WhatsAppQrData } from '../types';
+import type {
+  AppSettings,
+  PendingSettingsAction,
+  SystemRuntimeInfo,
+  SystemUpdateStatus,
+  WhatsAppQrData,
+} from '../types';
 import {
   ApiError,
+  applySelfUpdateApi,
+  checkForUpdatesApi,
+  fetchHealthApi,
   fetchRuntimeApi,
   fetchSettingsApi,
+  fetchUpdateStatusApi,
   fetchWhatsAppQrApi,
   fetchWhatsAppStatusApi,
   reconnectWhatsAppApi,
@@ -23,6 +33,7 @@ import {
 } from '../utils/api';
 import { ROUTES } from '../utils/constants';
 import { toast } from './Toaster';
+import { SystemUpdatesSection } from './settings/SystemUpdatesSection';
 import { TemplatesSection } from './settings/TemplatesSection';
 import { UnsavedChangesModal } from './settings/UnsavedChangesModal';
 import { WhatsAppGatewayCard } from './settings/WhatsAppGatewayCard';
@@ -58,7 +69,11 @@ export function SettingsView() {
   const [loadingQr, setLoadingQr] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
-  const [, setRuntimeInfo] = useState<SystemRuntimeInfo | null>(null);
+  const [runtimeInfo, setRuntimeInfo] = useState<SystemRuntimeInfo | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<SystemUpdateStatus | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [applyingUpdate, setApplyingUpdate] = useState(false);
+  const [restartingApp, setRestartingApp] = useState(false);
 
   useEffect(() => {
     setForm({ ...settings, smtpPass: '' });
@@ -80,7 +95,9 @@ export function SettingsView() {
       form.portalUrl !== settings.portalUrl ||
       form.previewBeforeDispatch !== settings.previewBeforeDispatch ||
       form.emailSubjectTemplate !== settings.emailSubjectTemplate ||
-      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate
+      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate ||
+      form.autoUpdateEnabled !== settings.autoUpdateEnabled ||
+      form.updateRepo !== settings.updateRepo
     );
   }, [form, settings]);
 
@@ -167,9 +184,15 @@ export function SettingsView() {
   const loadRuntime = useCallback(async () => {
     if (!token) return;
     try {
-      const data = await fetchRuntimeApi(token);
-      if (data && data.ok) {
-        setRuntimeInfo(data);
+      const [rt, upd] = await Promise.all([
+        fetchRuntimeApi(token).catch(() => null),
+        fetchUpdateStatusApi(token).catch(() => null),
+      ]);
+      if (rt && rt.ok) {
+        setRuntimeInfo(rt);
+      }
+      if (upd) {
+        setUpdateStatus(upd);
       }
     } catch {
       // Ignore transient runtime probe errors
@@ -415,6 +438,81 @@ export function SettingsView() {
     } finally {
       setUnlinking(false);
     }
+  };
+
+  const handleCheckForUpdates = async () => {
+    setCheckingUpdate(true);
+    try {
+      const st = await checkForUpdatesApi(token);
+      setUpdateStatus(st);
+      if (st.state === 'error') {
+        toast.error('Update check failed', st.message);
+      } else if (st.updateAvailable) {
+        toast.warning('New version available', st.message);
+      } else if (st.state === 'unconfigured') {
+        toast.warning('Update repository not configured', st.message);
+      } else {
+        toast.success('System is up to date', st.message);
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        logoutAdmin('expired');
+        return;
+      }
+      toast.error(
+        'Update check failed',
+        err instanceof Error ? err.message : 'Unable to query GitHub Releases.'
+      );
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const handleApplyUpdate = async () => {
+    setApplyingUpdate(true);
+    try {
+      const res = await applySelfUpdateApi(token);
+      setUpdateStatus(res.status);
+      if (res.ok && res.status.restartScheduled) {
+        setRestartingApp(true);
+        toast.success(
+          `Updated to v${res.status.latestVersion}`,
+          'Restarting service and reloading portal...'
+        );
+        const deadline = Date.now() + 25000;
+        const pollRestart = async () => {
+          await new Promise((r) => setTimeout(r, 900));
+          while (Date.now() < deadline) {
+            try {
+              const health = await fetchHealthApi();
+              if (health.ok) {
+                window.location.reload();
+                return;
+              }
+            } catch {
+              // Server restarting; retry shortly
+            }
+            await new Promise((r) => setTimeout(r, 700));
+          }
+          setRestartingApp(false);
+          setApplyingUpdate(false);
+          toast.warning('Restart taking longer than expected', 'Reload the page once the service restarts.');
+        };
+        void pollRestart();
+        return;
+      } else if (res.ok) {
+        toast.success('Update status', res.status.message);
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        logoutAdmin('expired');
+        return;
+      }
+      const msg = err instanceof Error ? err.message : 'Failed to install update.';
+      toast.error('Self-update failed', msg);
+      setUpdateStatus((prev) => (prev ? { ...prev, state: 'error', message: msg } : prev));
+    }
+    setApplyingUpdate(false);
   };
 
   return (
@@ -748,6 +846,21 @@ export function SettingsView() {
           portalUrl={form.portalUrl}
           onChangeSubject={(next) => setForm({ ...form, emailSubjectTemplate: next })}
           onChangeWhatsapp={(next) => setForm({ ...form, whatsappMessageTemplate: next })}
+        />
+
+        <SystemUpdatesSection
+          autoUpdateEnabled={form.autoUpdateEnabled}
+          updateRepo={form.updateRepo}
+          savedUpdateRepo={settings.updateRepo}
+          runtimeInfo={runtimeInfo}
+          updateStatus={updateStatus}
+          checkingUpdate={checkingUpdate}
+          applyingUpdate={applyingUpdate}
+          restartingApp={restartingApp}
+          onToggleAutoUpdate={(enabled) => setForm({ ...form, autoUpdateEnabled: enabled })}
+          onChangeUpdateRepo={(repo) => setForm({ ...form, updateRepo: repo })}
+          onCheckNow={() => void handleCheckForUpdates()}
+          onApplyUpdate={() => void handleApplyUpdate()}
         />
 
         <div className="flex justify-end">

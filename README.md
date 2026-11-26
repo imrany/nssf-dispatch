@@ -40,6 +40,8 @@ Copy `.env.example` to `.env` if needed:
 | `GO_SERVICE_URL` | Go backend URL proxied by Vite `/api` during frontend development | `http://127.0.0.1:8080` |
 | `NSSF_DB_PATH` | Optional SQLite database file path for the Go server | `nssf_dispatch.db` |
 | `NSSF_WA_DB_PATH` | Optional SQLite database file path for `whatsmeow` device/session keys | `nssf_whatsapp.db` |
+| `NSSF_UPDATE_REPO` | Optional GitHub `owner/repo` slug for automatic self-updates (auto-injected by CI builds) | _(from build ldflags)_ |
+| `NSSF_AUTO_UPDATE` | Set to `false` or `0` to disable background automatic self-updates | `true` |
 
 ---
 
@@ -87,7 +89,7 @@ This builds `dist/`, embeds the React SPA into `go/cmd/server/dist/`, compiles p
 - **Linux / Ubuntu (`amd64` & `arm64`)**:
   - `NSSF-Statement-Dispatch-linux-{amd64,arm64}.deb` (native Ubuntu/Debian installer registering `/usr/bin/nssf-statement-dispatch`, desktop entry, icons, `systemd --user` service, and clean user-data removal on `remove`/`purge`)
   - `NSSF-Statement-Dispatch-linux-{amd64,arm64}.tar.gz` (includes `install.sh`, `start.sh`, `uninstall.sh`, `nssf-dispatch.desktop`, `nssf-dispatch.png`, and `SETUP.txt`)
-  - Raw binaries `nssf-statement-dispatch-linux-{amd64,arm64}` (also support `--install`, `--uninstall`, `--cleanup-data`, `--reset-admin`, `--no-open`, and `--version`)
+  - Raw binaries `nssf-statement-dispatch-linux-{amd64,arm64}` (also support `--install`, `--uninstall`, `--cleanup-data`, `--reset-admin`, `--update`, `--no-open`, and `--version`)
 - **Checksums**: `SHA256SUMS.txt`
 
 Running the standalone binary directly serves both the React SPA and all `/api/*` endpoints from a single executable (`PORT=8080` by default), stores SQLite databases and settings inside hidden OS user folders (`~/.config/nssf-dispatch` on Linux, `%AppData%\nssf-dispatch` on Windows, `~/Library/Application Support/nssf-dispatch` on macOS) removed upon uninstallation, and automatically opens `http://127.0.0.1:8080` in the default browser once started (pass `--no-open` or set `NSSF_NO_BROWSER=1` to run headless). On first launch, the portal displays **Setup Admin Account** until an administrator account and backup recovery key are created; Email and WhatsApp dispatch remain disabled until configured/paired in Settings, and non-NSSF PDFs are rejected on upload.
@@ -109,6 +111,9 @@ git push origin v1.0.0
 |---|---|---|
 | `GET /api/health` | Public | Go server health check |
 | `GET /api/system/runtime` | Public | Go runtime and persistence status |
+| `GET /api/system/update/status` | Admin | Current version and automatic self-update state |
+| `POST /api/system/update/check` | Admin | Query GitHub Releases for a newer verified version |
+| `POST /api/system/update/apply` | Admin | Download, SHA-256 verify, swap binary, and restart |
 | `GET /api/auth/status` | Public | Admin setup & session authentication status |
 | `POST /api/auth/setup` | Public (first-run) | Create initial administrator account & recovery key |
 | `POST /api/auth/login` | Public | Sign in and obtain Bearer session token |

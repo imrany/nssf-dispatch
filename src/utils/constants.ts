@@ -64,6 +64,8 @@ Please find attached your official NSSF Provisional Member Statement ({renamedFi
 Enter {passwordGuide} when prompted for the PDF password.
 
 Self-Service: USSD *303# or {portalUrl}`,
+  autoUpdateEnabled: true,
+  updateRepo: '',
 };
 
 export const TEMPLATE_PLACEHOLDERS: Array<{ token: string; label: string }> = [

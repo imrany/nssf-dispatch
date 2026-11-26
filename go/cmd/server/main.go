@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,6 +31,7 @@ var (
 	appVersion   = "1.0.0"
 	buildCommit  = "dev"
 	buildDate    = "unknown"
+	githubRepo   = ""
 )
 
 //go:embed dist/*
@@ -305,6 +308,8 @@ func main() {
 	installApp := false
 	uninstallApp := false
 	cleanupData := false
+	runUpdate := false
+	waitRestart := false
 	flag.BoolVar(&showVersion, "version", false, "Print application version and publisher metadata")
 	flag.BoolVar(&showVersionShort, "v", false, "Print application version and publisher metadata")
 	flag.BoolVar(&openUI, "open", true, "Open the portal in the default web browser after startup")
@@ -313,7 +318,11 @@ func main() {
 	flag.BoolVar(&installApp, "install", false, "Install desktop launcher, icon, and user binary (Linux/Ubuntu)")
 	flag.BoolVar(&uninstallApp, "uninstall", false, "Remove user desktop launcher, binary, and stored user data")
 	flag.BoolVar(&cleanupData, "cleanup-data", false, "Remove stored database and config files from user data folders")
+	flag.BoolVar(&runUpdate, "update", false, "Check GitHub Releases and self-update to the latest version")
+	flag.BoolVar(&waitRestart, "wait-restart", false, "Wait briefly for previous instance port release after self-update")
 	flag.Parse()
+
+	cleanupOldExecutableBackup()
 
 	if showVersion || showVersionShort {
 		fmt.Printf("%s v%s\nPublisher: %s\nCommit: %s\nBuilt: %s\nTarget: %s/%s\n",
@@ -340,6 +349,11 @@ func main() {
 
 	if resetAdmin {
 		runCLIAdminReset()
+		return
+	}
+
+	if runUpdate {
+		RunCLIUpdate()
 		return
 	}
 
@@ -383,11 +397,61 @@ func main() {
 			"goEngineInfo": map[string]any{
 				"engine":           "go",
 				"version":          appVersion,
+				"commit":           buildCommit,
+				"buildDate":        buildDate,
+				"os":               runtime.GOOS,
+				"arch":             runtime.GOARCH,
 				"publisher":        appPublisher,
 				"sqliteCliBackend": hasSQLiteCLI(),
 			},
 		})
 	})
+
+	mux.HandleFunc("/api/system/update/status", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, 200, GetUpdateStatusSnapshot())
+	}))
+
+	mux.HandleFunc("/api/system/update/check", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		st := CheckForUpdates(ctx)
+		writeJSON(w, 200, st)
+	}))
+
+	mux.HandleFunc("/api/system/update/apply", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		st := ApplySelfUpdate(ctx, true)
+		if st.State == "error" {
+			statusCode := http.StatusBadGateway
+			if st.RequiresElevation {
+				statusCode = http.StatusForbidden
+			}
+			writeJSON(w, statusCode, map[string]any{
+				"ok":                false,
+				"error":             st.Message,
+				"status":            st,
+				"requiresElevation": st.RequiresElevation,
+			})
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok":     true,
+			"status": st,
+		})
+	}))
 
 	mux.HandleFunc("/api/verify-statement-file", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -993,7 +1057,11 @@ func main() {
 				return
 			}
 			if err := SaveSettings(cfg); err != nil {
-				writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
+				statusCode := 500
+				if strings.Contains(err.Error(), "update repository") {
+					statusCode = 400
+				}
+				writeJSON(w, statusCode, map[string]any{"ok": false, "error": err.Error()})
 				return
 			}
 			updated, _ := GetPublicSettings()
@@ -1148,8 +1216,22 @@ func main() {
 		_, _ = w.Write(indexBytes)
 	})
 
-	ln, err := net.Listen("tcp", "0.0.0.0:"+port)
-	if err != nil {
+	var ln net.Listener
+	var listenErr error
+	maxBindAttempts := 1
+	if waitRestart {
+		maxBindAttempts = 25
+	}
+	for attempt := 0; attempt < maxBindAttempts; attempt++ {
+		ln, listenErr = net.Listen("tcp", "0.0.0.0:"+port)
+		if listenErr == nil {
+			break
+		}
+		if waitRestart && attempt < maxBindAttempts-1 {
+			time.Sleep(150 * time.Millisecond)
+		}
+	}
+	if listenErr != nil {
 		if isOwnInstanceRunning(port) {
 			targetURL := "http://127.0.0.1:" + port
 			log.Printf("%s is already running on %s — opening browser.", appName, targetURL)
@@ -1158,8 +1240,16 @@ func main() {
 			}
 			return
 		}
-		log.Fatalf("Failed to bind port %s: %v", port, err)
+		log.Fatalf("Failed to bind port %s: %v", port, listenErr)
 	}
+
+	httpServer := &http.Server{Handler: requestLoggerMiddleware(mux)}
+	StartAutoUpdateLoop(func() {
+		_ = ln.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(ctx)
+	})
 
 	targetURL := "http://127.0.0.1:" + port
 	log.Printf("%s v%s (%s) listening on %s (data: %s)", appName, appVersion, appPublisher, targetURL, getAppDataDir())
@@ -1170,7 +1260,9 @@ func main() {
 		}()
 	}
 
-	log.Fatal(http.Serve(ln, requestLoggerMiddleware(mux)))
+	if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		log.Fatal(err)
+	}
 }
 
 type loggingResponseWriter struct {

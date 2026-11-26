@@ -29,8 +29,15 @@ APP_VER_CSV="${VER_MAJOR},${VER_MINOR},${VER_PATCH},0"
 APP_VER_RAW="${VER_MAJOR}.${VER_MINOR}.${VER_PATCH}.0"
 
 BUILD_COMMIT="dev"
+GITHUB_REPO="${GITHUB_REPOSITORY:-}"
 if command -v git >/dev/null 2>&1 && git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   BUILD_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "dev")"
+  if [[ -z "$GITHUB_REPO" ]]; then
+    ORIGIN_URL="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ "$ORIGIN_URL" =~ github\.com[:/]([^/]+/[^/.]+)(\.git)?$ ]]; then
+      GITHUB_REPO="${BASH_REMATCH[1]}"
+    fi
+  fi
 fi
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -62,7 +69,7 @@ go mod tidy
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR/.stage"
 
-COMMON_LDFLAGS="-s -w -X 'main.appName=$APP_NAME' -X 'main.appPublisher=$APP_PUBLISHER' -X 'main.appVersion=$APP_VERSION_CLEAN' -X 'main.buildCommit=$BUILD_COMMIT' -X 'main.buildDate=$BUILD_DATE'"
+COMMON_LDFLAGS="-s -w -X 'main.appName=$APP_NAME' -X 'main.appPublisher=$APP_PUBLISHER' -X 'main.appVersion=$APP_VERSION_CLEAN' -X 'main.buildCommit=$BUILD_COMMIT' -X 'main.buildDate=$BUILD_DATE' -X 'main.githubRepo=$GITHUB_REPO'"
 
 echo "[4/5] Building standalone binaries and desktop app packages..."
 
