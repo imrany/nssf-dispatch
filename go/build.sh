@@ -181,15 +181,14 @@ if command -v wixl >/dev/null 2>&1; then
            Manufacturer="${APP_PUBLISHER}"
            UpgradeCode="6E2B8D4A-9F1C-4B6A-8D2E-1C4A7F9E3B10">
 
-    <Package InstallerVersion="301"
+    <Package InstallerVersion="200"
              Description="${APP_NAME} Windows Installer"
-             Compressed="yes"
-             InstallScope="perMachine"
-             SummaryCodepage="1252" />
+             Compressed="yes" />
 
     <Media Id="1" Cabinet="nssf.cab" EmbedCab="yes" />
 
     <Icon Id="AppIcon.ico" SourceFile="$GO_DIR/packaging/windows/nssf.ico" />
+    <Property Id="ALLUSERS" Value="1" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <Property Id="ARPHELPLINK" Value="https://nssfdigital.enssf.co.ke" />
 
@@ -266,8 +265,7 @@ if command -v wixl >/dev/null 2>&1; then
                   FileKey="AppExecutable"
                   ExeCommand="--cleanup-data"
                   Execute="immediate"
-                  Return="ignore"
-                  Impersonate="yes" />
+                  Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="CleanupDataOnUninstall" Before="RemoveFiles"><![CDATA[REMOVE="ALL"]]></Custom>
@@ -276,7 +274,15 @@ if command -v wixl >/dev/null 2>&1; then
 </Wix>
 EOF
   wixl -o "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.msi" --arch x64 "$WIN_MSI_STAGE/nssf-installer.wxs"
+  if [[ ! -s "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.msi" ]]; then
+    echo "Error: wixl completed without producing a valid Windows .msi installer." >&2
+    exit 1
+  fi
 else
+  if [[ "${REQUIRE_MSI:-0}" == "1" ]]; then
+    echo "Error: wixl (msitools) is required when REQUIRE_MSI=1." >&2
+    exit 1
+  fi
   echo "Warning: wixl (msitools) not found; skipping Windows .msi installer generation."
 fi
 

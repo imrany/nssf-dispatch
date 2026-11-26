@@ -10,6 +10,11 @@ on:
         description: 'Release version tag (e.g. v1.0.0)'
         required: false
         default: 'v1.0.0'
+      publish_release:
+        description: 'Publish release assets to GitHub Releases'
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: write
@@ -29,7 +34,9 @@ jobs:
         id: meta
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.version }}"
+            RAW_TAG="$(echo "${{ github.event.inputs.version }}" | tr -d '[:space:]')"
+            RAW_TAG="${RAW_TAG:-v1.0.0}"
+            TAG="v${RAW_TAG#v}"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
@@ -65,26 +72,33 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mingw-w64 zip msitools
+          wixl --version
 
       - name: Build frontend & cross-platform Go packages
         env:
           APP_VERSION: ${{ steps.meta.outputs.version }}
+          REQUIRE_MSI: '1'
         run: bash go/build.sh
 
       - name: Verify Linux binary, .deb, and Windows .msi metadata
         run: |
+          ls -lh ./go/release/
+          test -s ./go/release/NSSF-Statement-Dispatch-windows-amd64.msi
           ./go/release/nssf-statement-dispatch-linux-amd64 --version
           dpkg-deb -I ./go/release/NSSF-Statement-Dispatch-linux-amd64.deb
           msiinfo suminfo ./go/release/NSSF-Statement-Dispatch-windows-amd64.msi
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release != false)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: NSSF Digital Statement Dispatcher ${{ steps.meta.outputs.tag }}
           generate_release_notes: true
           prerelease: ${{ steps.meta.outputs.prerelease }}
+          make_latest: ${{ steps.meta.outputs.prerelease == 'false' }}
+          fail_on_unmatched_files: true
           files: go/release/*
 
       - name: Upload workflow artifact (manual dispatch)

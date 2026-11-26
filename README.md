@@ -92,9 +92,9 @@ This builds `dist/`, embeds the React SPA into `go/cmd/server/dist/`, compiles p
 
 Running the standalone binary directly serves both the React SPA and all `/api/*` endpoints from a single executable (`PORT=8080` by default), stores SQLite databases and settings inside hidden OS user folders (`~/.config/nssf-dispatch` on Linux, `%AppData%\nssf-dispatch` on Windows, `~/Library/Application Support/nssf-dispatch` on macOS) removed upon uninstallation, and automatically opens `http://127.0.0.1:8080` in the default browser once started (pass `--no-open` or set `NSSF_NO_BROWSER=1` to run headless). On first launch, the portal displays **Setup Admin Account** until an administrator account and backup recovery key are created; Email and WhatsApp dispatch remain disabled until configured/paired in Settings, and non-NSSF PDFs are rejected on upload.
 
-### Automated GitHub Releases (Tag Trigger)
+### Automated GitHub Releases (Tag Trigger or Manual Dispatch)
 
-Pushing a version tag (`v*`) automatically triggers `.github/workflows/release.yml` to build all cross-platform executables/desktop bundles and publish them to **GitHub Releases**:
+Pushing a version tag (`v*`) or running `.github/workflows/release.yml` via **Actions → Run workflow** automatically builds all cross-platform executables/desktop bundles (including `.msi`, `.deb`, `.app.tar.gz`, and `.exe`) and publishes them to **GitHub Releases**:
 
 ```bash
 git tag v1.0.0
