@@ -11,6 +11,7 @@ export const ROUTES = {
   ROOT: '/',
   STATEMENTS: '/statements',
   SETTINGS: '/settings',
+  SECURITY: '/settings/security',
   AUDIT: '/audit',
 } as const;
 

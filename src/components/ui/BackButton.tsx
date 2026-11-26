@@ -5,9 +5,10 @@ interface BackButtonProps {
   label: string;
   to?: string;
   onClick?: () => void;
+  align?: 'left' | 'right';
 }
 
-export function BackButton({ label, to, onClick }: BackButtonProps) {
+export function BackButton({ label, to, onClick, align = 'left' }: BackButtonProps) {
   const { navigateTo } = useApp();
 
   const handleClick = () => {
@@ -23,7 +24,9 @@ export function BackButton({ label, to, onClick }: BackButtonProps) {
       <button
         type="button"
         onClick={handleClick}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-2.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 ${
+          align === 'right' ? '-mr-2.5' : '-ml-2.5'
+        } rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap`}
       >
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
         <span>{label}</span>

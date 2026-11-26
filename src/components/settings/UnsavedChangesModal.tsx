@@ -20,7 +20,13 @@ export function UnsavedChangesModal({
 }: UnsavedChangesModalProps) {
   const targetDescription =
     pendingAction?.type === 'route'
-      ? `navigating to ${pendingAction.targetPath === ROUTES.STATEMENTS ? 'Service Desk' : 'Audit Logs'}`
+      ? `navigating to ${
+          pendingAction.targetPath === ROUTES.STATEMENTS
+            ? 'Service Desk'
+            : pendingAction.targetPath === ROUTES.SECURITY
+              ? 'Security'
+              : 'Audit Logs'
+        }`
       : pendingAction?.type === 'lock_settings'
         ? 'locking Settings'
         : 'refreshing settings';

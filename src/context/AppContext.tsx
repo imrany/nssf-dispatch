@@ -124,6 +124,8 @@ export function AppProvider({
       routeSuffix = 'Initial Admin Setup';
     } else if (location.pathname === ROUTES.SETTINGS) {
       routeSuffix = 'Settings';
+    } else if (location.pathname === ROUTES.SECURITY) {
+      routeSuffix = 'Security';
     } else if (location.pathname === ROUTES.AUDIT) {
       routeSuffix = 'Audit Logs';
     } else if (receipt) {

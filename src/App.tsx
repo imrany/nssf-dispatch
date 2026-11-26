@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { AuditLogsView } from './components/AuditLogsView';
 import { DispatchSuccess } from './components/DispatchSuccess';
 import { DispatchWorkspace } from './components/DispatchWorkspace';
+import { SecurityView } from './components/SecurityView';
 import { SettingsAuthGate } from './components/SettingsAuthGate';
 import { SettingsView } from './components/SettingsView';
 import { Toaster } from './components/Toaster';
@@ -23,6 +24,11 @@ function StatementsPage() {
 function SettingsPage() {
   const { adminToken } = useApp();
   return adminToken ? <SettingsView /> : <SettingsAuthGate />;
+}
+
+function SecurityPage() {
+  const { adminToken } = useApp();
+  return adminToken ? <SecurityView /> : <SettingsAuthGate />;
 }
 
 function AuditPage() {
@@ -89,6 +95,7 @@ function AppShell() {
                   <Route path={ROUTES.ROOT} element={<Navigate to={ROUTES.STATEMENTS} replace />} />
                   <Route path={ROUTES.STATEMENTS} element={<StatementsPage />} />
                   <Route path={ROUTES.SETTINGS} element={<SettingsPage />} />
+                  <Route path={ROUTES.SECURITY} element={<SecurityPage />} />
                   <Route path={ROUTES.AUDIT} element={<AuditPage />} />
                   <Route path="*" element={<Navigate to={ROUTES.STATEMENTS} replace />} />
                 </Routes>
