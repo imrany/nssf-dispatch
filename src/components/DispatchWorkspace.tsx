@@ -779,55 +779,6 @@ export function DispatchWorkspace() {
               </div>
             </motion.div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {[
-                {
-                  id: 'email' as const,
-                  label: 'Email Only',
-                  shortcut: 'Ctrl+E',
-                  enabled: settings.emailEnabled,
-                },
-                {
-                  id: 'whatsapp' as const,
-                  label: 'WhatsApp Only',
-                  shortcut: 'Ctrl+W',
-                  enabled: settings.whatsappEnabled,
-                },
-                {
-                  id: 'both' as const,
-                  label: 'Email & WhatsApp',
-                  shortcut: 'Ctrl+B',
-                  enabled: settings.emailEnabled && settings.whatsappEnabled,
-                },
-              ].map((opt) => (
-                <motion.button
-                  key={opt.id}
-                  type="button"
-                  disabled={!opt.enabled || submitting}
-                  whileHover={opt.enabled && !submitting ? { y: -1 } : undefined}
-                  whileTap={opt.enabled && !submitting ? { scale: 0.98 } : undefined}
-                  transition={{ duration: 0.14, ease: SMOOTH_EASE }}
-                  onClick={() => setChannel(opt.id)}
-                  className={`h-11 rounded px-3 text-xs font-bold uppercase tracking-wider border inline-flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-                    channel === opt.id
-                      ? 'bg-[#2B7A3B] border-[#2B7A3B] text-white'
-                      : 'bg-white border-[#D1D9E0] text-[#0F2437] hover:border-[#2B7A3B]'
-                  }`}
-                >
-                  <span>{opt.label}</span>
-                  <kbd
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-normal normal-case tracking-normal border ${
-                      channel === opt.id
-                        ? 'bg-white/15 border-white/30 text-white'
-                        : 'bg-slate-50 border-slate-200 text-slate-500'
-                    }`}
-                  >
-                    {opt.shortcut}
-                  </kbd>
-                </motion.button>
-              ))}
-            </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               {(channel === 'email' || channel === 'both') && (
                 <div className={channel === 'email' ? 'sm:col-span-2' : ''}>
