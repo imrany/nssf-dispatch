@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Eye, FileText, Lock, Send, ShieldCheck, X } from 'lucide-react';
+import { FileText, Lock, Send, ShieldCheck, X } from 'lucide-react';
 import type { DispatchChannel, StatementMeta } from '../types';
 import { SMOOTH_EASE } from '../utils/constants';
 import { formatFileSizeKb, isValidEmail, isValidWhatsappNumber } from '../utils/validation';
+import { NssfLogo } from './NssfLogo';
 import { KeyValueList, type KeyValueItem } from './ui';
 
 interface StatementPreviewModalProps {
@@ -143,9 +144,9 @@ export function StatementPreviewModal({
             className="w-full max-w-5xl bg-white rounded-xl border border-slate-200 shadow-[0_24px_64px_rgba(15,36,55,0.28)] overflow-hidden my-auto"
           >
             <div className="px-5 sm:px-6 py-4 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-9 h-9 rounded-md bg-[#2B7A3B] text-white flex items-center justify-center shrink-0">
-                  <Eye className="w-4 h-4" aria-hidden="true" />
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="shrink-0 bg-white border border-slate-200 rounded-md px-2 py-1">
+                  <NssfLogo compact showSubtitle={false} />
                 </div>
                 <div className="min-w-0">
                   <h2

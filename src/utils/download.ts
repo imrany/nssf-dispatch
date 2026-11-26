@@ -68,10 +68,78 @@ function wrapPdfLine(value: string, maxChars: number): string[] {
   return lines;
 }
 
-export function buildDispatchReceiptPdfBlob(
+interface PdfLogoRaster {
+  width: number;
+  height: number;
+  data: Uint8Array;
+  compressed: boolean;
+}
+
+let cachedPdfLogoPromise: Promise<PdfLogoRaster | null> | null = null;
+
+async function compressDeflate(raw: Uint8Array): Promise<Uint8Array | null> {
+  if (typeof CompressionStream === 'undefined') return null;
+  try {
+    const cs = new CompressionStream('deflate');
+    const writer = cs.writable.getWriter();
+    const copy = new Uint8Array(raw.byteLength);
+    copy.set(raw);
+    void writer.write(copy);
+    void writer.close();
+    const outBuf = await new Response(cs.readable).arrayBuffer();
+    return new Uint8Array(outBuf);
+  } catch {
+    return null;
+  }
+}
+
+async function loadPdfLogoRaster(): Promise<PdfLogoRaster | null> {
+  if (cachedPdfLogoPromise) return cachedPdfLogoPromise;
+  cachedPdfLogoPromise = (async () => {
+    if (typeof Image === 'undefined' || typeof document === 'undefined') return null;
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.crossOrigin = 'anonymous';
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Failed to load NSSF logo'));
+        el.src = '/assets/nssf-cl_d27cbb88.png';
+      });
+      const width = img.naturalWidth || 287;
+      const height = img.naturalHeight || 150;
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      const rgba = ctx.getImageData(0, 0, width, height).data;
+      const rgb = new Uint8Array(width * height * 3);
+      for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+        rgb[j] = rgba[i];
+        rgb[j + 1] = rgba[i + 1];
+        rgb[j + 2] = rgba[i + 2];
+      }
+      const compressedBytes = await compressDeflate(rgb);
+      if (compressedBytes && compressedBytes.length < rgb.length) {
+        return { width, height, data: compressedBytes, compressed: true };
+      }
+      return { width, height, data: rgb, compressed: false };
+    } catch {
+      cachedPdfLogoPromise = null;
+      return null;
+    }
+  })();
+  return cachedPdfLogoPromise;
+}
+
+export async function buildDispatchReceiptPdfBlob(
   receipt: DispatchReceipt,
   brand: { appName: string; publisher: string; officeLocation: string; ussdCode: string }
-): Blob {
+): Promise<Blob> {
+  const logoRaster = await loadPdfLogoRaster();
   const cmds: string[] = [];
   const addText = (
     font: 'F1' | 'F2',
@@ -84,18 +152,27 @@ export function buildDispatchReceiptPdfBlob(
     cmds.push(`BT /${font} ${size} Tf ${rgb} rg 1 0 0 1 ${x} ${y} Tm (${escapePdfLiteral(text)}) Tj ET`);
   };
 
-  // Top NSSF Dark Green Header Banner + Lime Accent Strip
-  cmds.push('0.169 0.478 0.231 rg 0 742 595 100 re f');
-  cmds.push('0.420 0.765 0.000 rg 0 737 595 5 re f');
+  // Clean White Official NSSF Letterhead + Logo + Green/Lime Divider Bar
+  let textStartX = 44;
+  if (logoRaster) {
+    const drawHeight = 50;
+    const drawWidth = Number(((logoRaster.width / logoRaster.height) * drawHeight).toFixed(2));
+    cmds.push(`q ${drawWidth} 0 0 ${drawHeight} 44 754 cm /Im1 Do Q`);
+    textStartX = Math.round(44 + drawWidth + 16);
+  }
 
-  addText('F2', 11, 44, 808, '0.84 0.96 0.86', brand.publisher.toUpperCase());
-  addText('F2', 19, 44, 782, '1 1 1', brand.appName);
-  addText('F1', 10, 44, 760, '0.92 0.98 0.93', 'OFFICIAL MEMBER STATEMENT DISPATCH RECEIPT');
+  addText('F2', 9.5, textStartX, 792, '0.118 0.420 0.204', brand.publisher.toUpperCase());
+  addText('F2', 15.5, textStartX, 773, '0.059 0.141 0.216', brand.appName);
+  addText('F1', 9.5, textStartX, 757, '0.35 0.42 0.49', 'OFFICIAL MEMBER STATEMENT DISPATCH RECEIPT');
+
+  // NSSF Brand Green & Lime Rule underneath letterhead
+  cmds.push('0.169 0.478 0.231 rg 44 740 507 3 re f');
+  cmds.push('0.420 0.765 0.000 rg 44 738 507 1.5 re f');
 
   // Confirmation Badge Box
   cmds.push('0.925 0.992 0.953 rg 44 676 507 44 re f');
   cmds.push('0.169 0.478 0.231 RG 0.8 w 44 676 507 44 re S');
-  addText('F2', 12, 58, 699, '0.118 0.420 0.204', 'DISPATCH CONFIRMED — LIVE DELIVERY RECORDED');
+  addText('F2', 12, 58, 699, '0.118 0.420 0.204', 'DISPATCH CONFIRMED - LIVE DELIVERY RECORDED');
   addText(
     'F1',
     9.5,
@@ -105,7 +182,7 @@ export function buildDispatchReceiptPdfBlob(
     `Issued: ${receipt.timestamp}   |   Channel: ${receipt.channel}   |   Status: SENT`
   );
 
-  // Financial & Member Details Card
+  // Financial & Member Details Table
   const rows: Array<{ label: string; value: string; highlight?: boolean }> = [
     { label: 'Member Name', value: receipt.memberName },
     { label: 'NSSF Member No', value: receipt.memberNo },
@@ -170,38 +247,72 @@ export function buildDispatchReceiptPdfBlob(
     `${brand.publisher} | ${brand.officeLocation} | Self-Service USSD: ${brand.ussdCode}`
   );
 
-  const streamContent = cmds.join('\n');
   const encoder = new TextEncoder();
-  const streamBytes = encoder.encode(streamContent).length;
+  const streamBytes = encoder.encode(cmds.join('\n'));
+  const xobjectRes = logoRaster ? ' /XObject << /Im1 7 0 R >>' : '';
 
-  const objects = [
-    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>\nendobj\n',
-    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
-    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n',
-    `6 0 obj\n<< /Length ${streamBytes} >>\nstream\n${streamContent}\nendstream\nendobj\n`,
+  const objectParts: Uint8Array[] = [
+    encoder.encode('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n'),
+    encoder.encode('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n'),
+    encoder.encode(
+      `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >>${xobjectRes} >> /Contents 6 0 R >>\nendobj\n`
+    ),
+    encoder.encode('4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n'),
+    encoder.encode('5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n'),
+    concatBytes([
+      encoder.encode(`6 0 obj\n<< /Length ${streamBytes.length} >>\nstream\n`),
+      streamBytes,
+      encoder.encode('\nendstream\nendobj\n'),
+    ]),
   ];
 
-  let pdf = '%PDF-1.4\n';
-  const offsets: number[] = [0];
-  let byteOffset = encoder.encode(pdf).length;
+  if (logoRaster) {
+    const filterEntry = logoRaster.compressed ? ' /Filter /FlateDecode' : '';
+    objectParts.push(
+      concatBytes([
+        encoder.encode(
+          `7 0 obj\n<< /Type /XObject /Subtype /Image /Width ${logoRaster.width} /Height ${logoRaster.height} /ColorSpace /DeviceRGB /BitsPerComponent 8${filterEntry} /Length ${logoRaster.data.length} >>\nstream\n`
+        ),
+        logoRaster.data,
+        encoder.encode('\nendstream\nendobj\n'),
+      ])
+    );
+  }
 
-  for (const obj of objects) {
+  const headerBytes = encoder.encode('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  const chunks: Uint8Array[] = [headerBytes];
+  const offsets: number[] = [0];
+  let byteOffset = headerBytes.length;
+
+  for (const objBytes of objectParts) {
     offsets.push(byteOffset);
-    pdf += obj;
-    byteOffset += encoder.encode(obj).length;
+    chunks.push(objBytes);
+    byteOffset += objBytes.length;
   }
 
   const xrefOffset = byteOffset;
-  pdf += `xref\n0 ${objects.length + 1}\n`;
-  pdf += '0000000000 65535 f \n';
+  let xrefStr = `xref\n0 ${objectParts.length + 1}\n`;
+  xrefStr += '0000000000 65535 f \n';
   for (let i = 1; i < offsets.length; i += 1) {
-    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+    xrefStr += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
   }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  xrefStr += `trailer\n<< /Size ${objectParts.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  chunks.push(encoder.encode(xrefStr));
 
-  return new Blob([encoder.encode(pdf)], { type: 'application/pdf' });
+  const pdfBytes = concatBytes(chunks);
+  return new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const part of parts) total += part.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 
 export function buildAuditCsvBlob(logs: AuditLog[]): Blob {

@@ -305,9 +305,9 @@ export function SettingsAuthGate({
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: SMOOTH_EASE }}
-          className="border border-slate-200 rounded-lg bg-white overflow-hidden"
+          className="overflow-hidden"
         >
-          <div className="px-6 py-5 border-b-4 border-[#2B7A3B] bg-emerald-50/40 flex items-center gap-3">
+          <div className="py-5 border-b-4 border-[#2B7A3B] flex items-center gap-3">
             <ShieldCheck className="w-6 h-6 text-[#2B7A3B] shrink-0" aria-hidden="true" />
             <div>
               <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#1E6B34]">
@@ -319,13 +319,13 @@ export function SettingsAuthGate({
             </div>
           </div>
 
-          <div className="p-6 space-y-5">
+          <div className="py-6 space-y-5">
             <p className="text-xs text-slate-600 leading-relaxed">
               Your administrator account is ready. Store this one-time recovery key securely—it is
               only shown once and allows you to reset a forgotten password even offline.
             </p>
 
-            <div className="p-4 rounded-md bg-slate-50 border border-slate-200 text-center">
+            <div className="py-4 border-y border-slate-200 text-center">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
                 Administrator Recovery Key
               </div>
@@ -403,11 +403,12 @@ export function SettingsAuthGate({
 
   if (statusError || !status) {
     return (
-      <div className="py-12 max-w-md mx-auto space-y-4">
+      <div className="py-12 max-w-md mx-auto space-y-5">
         {!initialSetupRequired && (
           <BackButton label="Back to Service Desk" onClick={() => navigateTo(ROUTES.STATEMENTS)} />
         )}
-        <div className="text-center pt-8 space-y-4">
+        <NssfLogo />
+        <div className="text-center pt-4 space-y-4">
           <AlertCircle className="w-8 h-8 text-red-600 mx-auto" aria-hidden="true" />
           <div className="text-sm font-semibold text-[#0F2437]">
             {statusError || 'Unable to verify administrator status.'}
@@ -423,11 +424,10 @@ export function SettingsAuthGate({
 
   return (
     <div className="py-6 sm:py-10 max-w-lg mx-auto space-y-5">
-      {!initialSetupRequired && !isSetupMode ? (
+      {!initialSetupRequired && !isSetupMode && (
         <BackButton label="Back to Service Desk" onClick={() => navigateTo(ROUTES.STATEMENTS)} />
-      ) : (
-        <NssfLogo />
       )}
+      <NssfLogo />
 
       <motion.div
         initial={{ opacity: 0, y: 10 }}

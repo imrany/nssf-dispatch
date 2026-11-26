@@ -1,5 +1,5 @@
 import React from 'react';
-import { useAppName } from '../../context/AppContext';
+import { NssfLogo } from '../NssfLogo';
 
 interface PageHeaderProps {
   title: React.ReactNode;
@@ -9,15 +9,11 @@ interface PageHeaderProps {
 }
 
 export function PageHeader({ title, subtitle, badge, actions }: PageHeaderProps) {
-  const appName = useAppName();
-
   return (
     <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
       <div>
-        <div className="text-[11px] font-bold tracking-[0.16em] text-[#1E6B34] uppercase">
-          {appName}
-        </div>
-        <div className="flex flex-wrap items-center gap-3 mt-1">
+        <NssfLogo />
+        <div className="flex flex-wrap items-center gap-3 mt-2">
           <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0F2437] tracking-tight">
             {title}
           </h1>

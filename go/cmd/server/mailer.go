@@ -38,6 +38,78 @@ func RenderMessageTemplate(template string, vars map[string]string, stripNewline
 	return result
 }
 
+func nssfLogoDataURI() string {
+	if len(embeddedLogoPNG) == 0 {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(embeddedLogoPNG)
+}
+
+func buildOfficialNSSFEmailHTML(logoSrc, memberName, period, renamedFile, passwordGuide, memberNo, standardAmount, voluntaryAmount, totalAmount, portalURL string) string {
+	logoMarkup := ""
+	if logoSrc != "" {
+		logoMarkup = fmt.Sprintf(
+			`<img src="%s" alt="NSSF — Growing You. For Good" style="height:52px;width:auto;display:block;border:0;margin-bottom:8px;" />`,
+			logoSrc,
+		)
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /></head>
+<body style="margin:0;padding:0;background-color:#ffffff;font-family:'Segoe UI',Roboto,Arial,sans-serif;color:#0f2437;">
+  <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:640px;margin:0 auto;background:#ffffff;">
+    <tr>
+      <td style="padding:24px 24px 16px;border-bottom:3px solid #2B7A3B;">
+        %s
+        <div style="font-size:15px;font-weight:800;color:#0f2437;letter-spacing:0.2px;">NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA</div>
+        <div style="font-size:12px;font-weight:600;color:#1E6B34;margin-top:3px;">Official Provisional Member Statement Dispatch</div>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:24px;">
+        <p style="margin:0 0 14px;font-size:15px;color:#0f2437;">Dear <strong>%s</strong>,</p>
+        <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#334155;">
+          Attached is your official <strong>NSSF Provisional Member Statement of Account</strong> covering <strong>%s</strong>, prepared and dispatched at your request through the NSSF Member Service Desk.
+        </p>
+        <div style="border-left:3px solid #2B7A3B;background-color:#f8faf9;padding:14px 18px;margin-bottom:22px;">
+          <div style="font-size:13px;font-weight:700;color:#1E6B34;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">How to Open &amp; View Your Statement</div>
+          <p style="margin:0 0 10px;font-size:13px;line-height:1.55;color:#1e293b;">
+            To protect your personal financial data under the Kenya Data Protection Act, the attached PDF file (<strong>%s</strong>) is password-encrypted.
+          </p>
+          <ol style="margin:0;padding-left:18px;font-size:13px;line-height:1.65;color:#1e293b;">
+            <li>Save and open <strong>%s</strong> in Adobe Acrobat Reader, Chrome, or your mobile PDF viewer.</li>
+            <li>When prompted for a document password, enter <strong>%s</strong>.</li>
+            <li>Verify your monthly Standard and Voluntary contributions directly inside the statement.</li>
+          </ol>
+        </div>
+        <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px;border-top:1px solid #e2e8f0;">
+          <tr><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">NSSF Member Number</td><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;font-family:monospace;color:#0f2437;">%s</td></tr>
+          <tr><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Statement Period</td><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:600;color:#0f2437;">%s</td></tr>
+          <tr><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Standard Contributions</td><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace;color:#0f2437;">KES %s</td></tr>
+          <tr><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Voluntary Contributions</td><td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace;color:#0f2437;">KES %s</td></tr>
+          <tr><td style="padding:11px 0;border-bottom:1px solid #e2e8f0;color:#0f2437;font-weight:700;">Total Fund Balance</td><td style="padding:11px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;color:#1E6B34;font-family:monospace;font-size:14px;">KES %s</td></tr>
+        </table>
+        <p style="margin:20px 0 0;font-size:13px;line-height:1.6;color:#475569;">
+          You can also access member services anytime via USSD <strong>*303#</strong> or the <a href="%s" style="color:#1E6B34;font-weight:600;">NSSF Digital Portal</a>.
+        </p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:14px 24px 24px;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b;line-height:1.5;">
+        National Social Security Fund (NSSF) · Social Security House, Bishops Road, P.O. Box 30599 - 00100 Nairobi, Kenya.
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`,
+		logoMarkup,
+		html.EscapeString(memberName), html.EscapeString(period), html.EscapeString(renamedFile),
+		html.EscapeString(renamedFile), html.EscapeString(passwordGuide), html.EscapeString(memberNo),
+		html.EscapeString(period), html.EscapeString(standardAmount), html.EscapeString(voluntaryAmount),
+		html.EscapeString(totalAmount), html.EscapeString(portalURL))
+}
+
 func BuildOfficialNSSFMessage(meta *StatementMeta, renamedFile, passwordMode, portalURL, rawPassword, emailSubjectTpl, whatsappMessageTpl string) (subject, htmlBody, plainText, whatsappText, passwordGuide string) {
 	masked := maskSecret(rawPassword)
 	if passwordMode == "id_and_nssf_last4" {
@@ -96,58 +168,18 @@ Social Security House, Bishops Road, P.O. Box 30599 - 00100 Nairobi`,
 		meta.MemberName, meta.Period, meta.MemberName, meta.MemberNo, defaultStr(meta.Employer, "Registered Contributor"),
 		meta.StandardAmount, meta.VoluntaryAmount, meta.TotalAmount, renamedFile, renamedFile, passwordGuide, portalURL)
 
-	htmlBody = fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8" /></head>
-<body style="margin:0;padding:24px;background-color:#f4f6f5;font-family:'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
-  <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #d1d5db;border-radius:8px;overflow:hidden;">
-    <tr>
-      <td style="background-color:#006837;padding:22px 28px;border-bottom:4px solid #c59b27;">
-        <div style="font-size:18px;font-weight:700;color:#ffffff;letter-spacing:0.3px;">NATIONAL SOCIAL SECURITY FUND (NSSF)</div>
-        <div style="font-size:12px;color:#fef3c7;margin-top:4px;">Provisional Member Statement Dispatch · Kenya</div>
-      </td>
-    </tr>
-    <tr>
-      <td style="padding:28px;">
-        <p style="margin:0 0 14px;font-size:15px;">Dear <strong>%s</strong>,</p>
-        <p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:#374151;">
-          Attached is your official <strong>NSSF Provisional Member Statement of Account</strong> covering <strong>%s</strong>, prepared and dispatched at your request through the NSSF Member Service Desk.
-        </p>
-        <div style="background-color:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:18px;margin-bottom:20px;">
-          <div style="font-size:14px;font-weight:700;color:#006837;margin-bottom:8px;">How to Open &amp; View Your Statement</div>
-          <p style="margin:0 0 10px;font-size:13px;line-height:1.55;color:#1f2937;">
-            To protect your personal financial data under the Kenya Data Protection Act, the attached PDF file (<strong>%s</strong>) is password-encrypted.
-          </p>
-          <ol style="margin:0;padding-left:18px;font-size:13px;line-height:1.65;color:#1f2937;">
-            <li>Save and open <strong>%s</strong> in Adobe Acrobat Reader, Chrome, or your mobile PDF viewer.</li>
-            <li>When prompted for a document password, enter <strong>%s</strong>.</li>
-            <li>Verify your monthly Standard and Voluntary contributions directly inside the statement.</li>
-          </ol>
-        </div>
-        <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px;border-top:1px solid #e5e7eb;">
-          <tr><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;color:#6b7280;">NSSF Member Number</td><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:700;font-family:monospace;">%s</td></tr>
-          <tr><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;color:#6b7280;">Statement Period</td><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">%s</td></tr>
-          <tr><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;color:#6b7280;">Standard Contributions</td><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;text-align:right;font-family:monospace;">KES %s</td></tr>
-          <tr><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;color:#6b7280;">Voluntary Contributions</td><td style="padding:9px 0;border-bottom:1px solid #e5e7eb;text-align:right;font-family:monospace;">KES %s</td></tr>
-          <tr><td style="padding:10px 0;color:#111827;font-weight:700;">Total Fund Balance</td><td style="padding:10px 0;text-align:right;font-weight:700;color:#006837;font-family:monospace;font-size:14px;">KES %s</td></tr>
-        </table>
-        <p style="margin:20px 0 0;font-size:13px;line-height:1.6;color:#4b5563;">
-          You can also access member services anytime via USSD <strong>*303#</strong> or the <a href="%s" style="color:#006837;font-weight:600;">NSSF Digital Portal</a>.
-        </p>
-      </td>
-    </tr>
-    <tr>
-      <td style="background-color:#f9fafb;padding:16px 28px;border-top:1px solid #e5e7eb;font-size:11px;color:#6b7280;line-height:1.5;">
-        National Social Security Fund (NSSF) · Social Security House, Bishops Road, P.O. Box 30599 - 00100 Nairobi, Kenya.
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`,
-		html.EscapeString(meta.MemberName), html.EscapeString(meta.Period), html.EscapeString(renamedFile),
-		html.EscapeString(renamedFile), html.EscapeString(passwordGuide), html.EscapeString(meta.MemberNo),
-		html.EscapeString(meta.Period), html.EscapeString(meta.StandardAmount), html.EscapeString(meta.VoluntaryAmount),
-		html.EscapeString(meta.TotalAmount), html.EscapeString(portalURL))
+	htmlBody = buildOfficialNSSFEmailHTML(
+		nssfLogoDataURI(),
+		meta.MemberName,
+		meta.Period,
+		renamedFile,
+		passwordGuide,
+		meta.MemberNo,
+		meta.StandardAmount,
+		meta.VoluntaryAmount,
+		meta.TotalAmount,
+		portalURL,
+	)
 
 	return
 }
@@ -194,16 +226,44 @@ func TestSMTPConnection(cfg AppSettings) error {
 	return c.Quit()
 }
 
+func writeBase64Wrapped(w *bytes.Buffer, data []byte) {
+	b64 := base64.StdEncoding.EncodeToString(data)
+	for i := 0; i < len(b64); i += 76 {
+		end := i + 76
+		if end > len(b64) {
+			end = len(b64)
+		}
+		_, _ = w.Write([]byte(b64[i:end] + "\r\n"))
+	}
+}
+
 func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, renamedFile string, encryptedPDF []byte, rawPassword string) error {
 	if !cfg.EmailEnabled {
 		return fmt.Errorf("email dispatch is currently disabled in system settings")
 	}
 
-	subject, htmlBody, plainText, _, _ := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
+	subject, htmlBody, plainText, _, passwordGuide := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
+
+	hasLogo := len(embeddedLogoPNG) > 0
+	if hasLogo {
+		htmlBody = buildOfficialNSSFEmailHTML(
+			"cid:nssf-logo",
+			meta.MemberName,
+			meta.Period,
+			renamedFile,
+			passwordGuide,
+			meta.MemberNo,
+			meta.StandardAmount,
+			meta.VoluntaryAmount,
+			meta.TotalAmount,
+			cfg.PortalURL,
+		)
+	}
 
 	var buf bytes.Buffer
 	mixedWriter := multipart.NewWriter(&buf)
 	altBoundary := "NSSF_ALT_" + randomHex(8)
+	relBoundary := "NSSF_REL_" + randomHex(8)
 
 	fmt.Fprintf(&buf, "From: %s\r\n", cfg.SMTPFrom)
 	fmt.Fprintf(&buf, "To: %s\r\n", recipient)
@@ -212,11 +272,25 @@ func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, 
 	fmt.Fprintf(&buf, "MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&buf, "Content-Type: multipart/mixed; boundary=%s\r\n\r\n", mixedWriter.Boundary())
 
-	altHeader := textproto.MIMEHeader{}
-	altHeader.Set("Content-Type", fmt.Sprintf("multipart/alternative; boundary=%s", altBoundary))
-	altPart, _ := mixedWriter.CreatePart(altHeader)
-	fmt.Fprintf(altPart, "--%s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n", altBoundary, plainText)
-	fmt.Fprintf(altPart, "--%s\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n--%s--\r\n", altBoundary, htmlBody, altBoundary)
+	if hasLogo {
+		relHeader := textproto.MIMEHeader{}
+		relHeader.Set("Content-Type", fmt.Sprintf("multipart/related; boundary=%s", relBoundary))
+		relPart, _ := mixedWriter.CreatePart(relHeader)
+		fmt.Fprintf(relPart, "--%s\r\nContent-Type: multipart/alternative; boundary=%s\r\n\r\n", relBoundary, altBoundary)
+		fmt.Fprintf(relPart, "--%s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n", altBoundary, plainText)
+		fmt.Fprintf(relPart, "--%s\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n--%s--\r\n", altBoundary, htmlBody, altBoundary)
+
+		var logoBuf bytes.Buffer
+		writeBase64Wrapped(&logoBuf, embeddedLogoPNG)
+		fmt.Fprintf(relPart, "--%s\r\nContent-Type: image/png; name=\"nssf-logo.png\"\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <nssf-logo>\r\nContent-Disposition: inline; filename=\"nssf-logo.png\"\r\n\r\n%s--%s--\r\n",
+			relBoundary, logoBuf.String(), relBoundary)
+	} else {
+		altHeader := textproto.MIMEHeader{}
+		altHeader.Set("Content-Type", fmt.Sprintf("multipart/alternative; boundary=%s", altBoundary))
+		altPart, _ := mixedWriter.CreatePart(altHeader)
+		fmt.Fprintf(altPart, "--%s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n", altBoundary, plainText)
+		fmt.Fprintf(altPart, "--%s\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n--%s--\r\n", altBoundary, htmlBody, altBoundary)
+	}
 
 	pdfHeader := textproto.MIMEHeader{}
 	pdfHeader.Set("Content-Type", fmt.Sprintf("application/pdf; name=\"%s\"", renamedFile))
@@ -224,14 +298,9 @@ func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, 
 	pdfHeader.Set("Content-Transfer-Encoding", "base64")
 	pdfPart, _ := mixedWriter.CreatePart(pdfHeader)
 
-	b64 := base64.StdEncoding.EncodeToString(encryptedPDF)
-	for i := 0; i < len(b64); i += 76 {
-		end := i + 76
-		if end > len(b64) {
-			end = len(b64)
-		}
-		_, _ = pdfPart.Write([]byte(b64[i:end] + "\r\n"))
-	}
+	var pdfB64Buf bytes.Buffer
+	writeBase64Wrapped(&pdfB64Buf, encryptedPDF)
+	_, _ = pdfPart.Write(pdfB64Buf.Bytes())
 	_ = mixedWriter.Close()
 
 	client, err := dialSMTPClient(cfg)

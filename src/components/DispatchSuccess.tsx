@@ -26,11 +26,11 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
     receipt.channel === 'WHATSAPP' ? 'text' : 'email'
   );
 
-  const handleDownloadReceipt = () => {
+  const handleDownloadReceipt = async () => {
     const safeMemberNo = (receipt.memberNo || 'MEMBER').replace(/[^A-Za-z0-9_-]/g, '');
     const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const receiptFilename = `NSSF_Dispatch_Receipt_${safeMemberNo}_${dateStamp}.pdf`;
-    const blob = buildDispatchReceiptPdfBlob(receipt, {
+    const blob = await buildDispatchReceiptPdfBlob(receipt, {
       appName,
       publisher,
       officeLocation,
@@ -170,7 +170,7 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
             whileHover={{ y: -1 }}
             whileTap={{ scale: 0.99 }}
             transition={{ duration: 0.16, ease: SMOOTH_EASE }}
-            onClick={handleDownloadReceipt}
+            onClick={() => void handleDownloadReceipt()}
             className="dispatch-cta-sheen inline-flex items-center gap-2 px-5 h-11 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-wider uppercase transition-colors whitespace-nowrap cursor-pointer"
           >
             <Download className="w-4 h-4" aria-hidden="true" />
@@ -257,7 +257,7 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
                   title="NSSF Official Email Preview"
                   sandbox=""
                   srcDoc={receipt.emailPreview.htmlBody}
-                  className="w-full h-[540px] border-0 bg-[#f4f6f5]"
+                  className="w-full h-[540px] border-0 bg-white"
                 />
               </motion.div>
             ) : (

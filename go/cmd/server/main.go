@@ -37,6 +37,9 @@ var embeddedFrontend embed.FS
 //go:embed nssf-dispatch.png
 var embeddedIconPNG []byte
 
+//go:embed nssf-logo.png
+var embeddedLogoPNG []byte
+
 func buildRenamedFile(template, memberNo string) string {
 	if strings.TrimSpace(template) == "" {
 		template = "NSSF_Statement_{memberNo}_{date}.pdf"
