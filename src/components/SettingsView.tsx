@@ -75,7 +75,6 @@ export function SettingsView() {
       form.smtpFrom !== settings.smtpFrom ||
       form.emailEnabled !== settings.emailEnabled ||
       form.whatsappEnabled !== settings.whatsappEnabled ||
-      form.deliveryMode !== settings.deliveryMode ||
       form.whatsappDeviceName !== settings.whatsappDeviceName ||
       form.filenameTemplate !== settings.filenameTemplate ||
       form.passwordMode !== settings.passwordMode ||
@@ -470,10 +469,10 @@ export function SettingsView() {
       <form onSubmit={handleSave} className="space-y-6">
         <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
           <h2 className="font-display text-base font-semibold text-[#006837] border-b border-slate-100 pb-2.5">
-            Channel Availability, Preview &amp; Delivery Mode
+            Channel Availability &amp; Pre-Send Preview
           </h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <label className="flex items-start gap-3 p-4 rounded-md border border-slate-200 cursor-pointer hover:border-slate-300">
               <input
                 type="checkbox"
@@ -528,23 +527,6 @@ export function SettingsView() {
                 </div>
               </div>
             </label>
-
-            <div className="p-4 rounded-md border border-slate-200 space-y-2">
-              <label htmlFor="delivery-mode" className="block text-sm font-semibold text-slate-900">
-                Dispatch Mode
-              </label>
-              <select
-                id="delivery-mode"
-                value={form.deliveryMode}
-                onChange={(e) =>
-                  setForm({ ...form, deliveryMode: e.target.value as AppSettings['deliveryMode'] })
-                }
-                className="w-full px-2.5 py-1.5 rounded border border-slate-300 text-xs font-medium text-slate-800 focus:outline-none focus:border-[#006837]"
-              >
-                <option value="preview">Service Desk Preview &amp; Package (Local)</option>
-                <option value="live">Live SMTP &amp; WhatsApp (whatsmeow)</option>
-              </select>
-            </div>
           </div>
         </section>
 

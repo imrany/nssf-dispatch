@@ -26,7 +26,6 @@ type AppSettings struct {
 	EmailEnabled            bool   `json:"emailEnabled"`
 	EmailConfigured         bool   `json:"emailConfigured"`
 	WhatsAppEnabled         bool   `json:"whatsappEnabled"`
-	DeliveryMode            string `json:"deliveryMode"`
 	WhatsAppBridgeURL       string `json:"whatsappBridgeUrl"`
 	WhatsAppPaired          bool   `json:"whatsappPaired"`
 	WhatsAppDeviceName      string `json:"whatsappDeviceName"`
@@ -233,7 +232,6 @@ func defaultSettingsMap() map[string]string {
 		"smtpFrom":                "NSSF Kenya Member Services <statements@nssfkenya.co.ke>",
 		"emailEnabled":            "true",
 		"whatsappEnabled":         "true",
-		"deliveryMode":            "preview",
 		"whatsappBridgeUrl":       "http://127.0.0.1:8095",
 		"whatsappPaired":          "false",
 		"whatsappDeviceName":      "NSSF Service Desk Terminal 01",
@@ -438,7 +436,6 @@ func settingsFromMap(m map[string]string, pairedOverride *bool) AppSettings {
 		EmailEnabled:            m["emailEnabled"] != "false",
 		EmailConfigured:         emailConfigured,
 		WhatsAppEnabled:         m["whatsappEnabled"] != "false",
-		DeliveryMode:            defaultStr(m["deliveryMode"], "preview"),
 		WhatsAppBridgeURL:       defaultStr(m["whatsappBridgeUrl"], "http://127.0.0.1:8095"),
 		WhatsAppPaired:          isPaired,
 		WhatsAppDeviceName:      defaultStr(m["whatsappDeviceName"], "NSSF Service Desk Terminal 01"),
@@ -503,7 +500,6 @@ func GetSafeWorkspaceSettings() AppSettings {
 		EmailEnabled:            raw.EmailEnabled,
 		EmailConfigured:         raw.EmailConfigured,
 		WhatsAppEnabled:         raw.WhatsAppEnabled,
-		DeliveryMode:            defaultStr(raw.DeliveryMode, "preview"),
 		WhatsAppBridgeURL:       "",
 		WhatsAppPaired:          raw.WhatsAppPaired,
 		WhatsAppDeviceName:      "",
@@ -534,7 +530,6 @@ func SaveSettings(input AppSettings) error {
 		"smtpFrom":                strings.TrimSpace(input.SMTPFrom),
 		"emailEnabled":            fmt.Sprintf("%v", input.EmailEnabled),
 		"whatsappEnabled":         fmt.Sprintf("%v", input.WhatsAppEnabled),
-		"deliveryMode":            defaultStr(input.DeliveryMode, "preview"),
 		"whatsappBridgeUrl":       defaultStr(strings.TrimSpace(input.WhatsAppBridgeURL), "whatsmeow://native"),
 		"whatsappPaired":          fmt.Sprintf("%v", current.WhatsAppPaired),
 		"whatsappDeviceName":      strings.TrimSpace(input.WhatsAppDeviceName),

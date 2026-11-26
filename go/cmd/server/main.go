@@ -19,7 +19,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -37,31 +36,6 @@ var embeddedFrontend embed.FS
 
 //go:embed nssf-dispatch.png
 var embeddedIconPNG []byte
-
-type cachedPDF struct {
-	filename  string
-	data      []byte
-	expiresAt time.Time
-}
-
-var (
-	pdfCacheMu sync.Mutex
-	pdfCache   = map[string]cachedPDF{}
-)
-
-func storeProtectedPDF(filename string, data []byte) string {
-	pdfCacheMu.Lock()
-	defer pdfCacheMu.Unlock()
-	now := time.Now()
-	for k, v := range pdfCache {
-		if v.expiresAt.Before(now) {
-			delete(pdfCache, k)
-		}
-	}
-	token := randomHex(16)
-	pdfCache[token] = cachedPDF{filename: filename, data: data, expiresAt: now.Add(30 * time.Minute)}
-	return token
-}
 
 func buildRenamedFile(template, memberNo string) string {
 	if strings.TrimSpace(template) == "" {
@@ -558,35 +532,26 @@ func main() {
 		}
 
 		renamedFile := buildRenamedFile(cfg.FilenameTemplate, meta.MemberNo)
-		downloadToken := storeProtectedPDF(renamedFile, encryptedPDF)
 		subject, htmlBody, plainText, whatsappText, passwordGuide := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
 
 		var delivered []string
 		if channel == "email" || channel == "both" {
-			if cfg.DeliveryMode == "live" {
-				if err := SendEmailStatement(cfg, email, meta, renamedFile, encryptedPDF, rawPassword); err != nil {
-					_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "EMAIL", email, renamedFile, "FAILED", err.Error())
-					writeJSON(w, 502, map[string]any{"ok": false, "error": "Email error: " + err.Error()})
-					return
-				}
-				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "EMAIL", email, renamedFile, "SENT", "SMTP delivered via "+cfg.SMTPHost)
-			} else {
-				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "EMAIL", email, renamedFile, "DISPATCHED (PREVIEW)", "Encrypted PDF & official NSSF email packaged in preview mode")
+			if err := SendEmailStatement(cfg, email, meta, renamedFile, encryptedPDF, rawPassword); err != nil {
+				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "EMAIL", email, renamedFile, "FAILED", err.Error())
+				writeJSON(w, 502, map[string]any{"ok": false, "error": "Email error: " + err.Error()})
+				return
 			}
+			_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "EMAIL", email, renamedFile, "SENT", "SMTP delivered via "+cfg.SMTPHost)
 			delivered = append(delivered, "EMAIL")
 		}
 
 		if channel == "whatsapp" || channel == "both" {
-			if cfg.DeliveryMode == "live" {
-				if err := SendWhatsAppStatement(cfg, whatsapp, meta, renamedFile, encryptedPDF, rawPassword); err != nil {
-					_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "FAILED", err.Error())
-					writeJSON(w, 502, map[string]any{"ok": false, "error": "WhatsApp error: " + err.Error()})
-					return
-				}
-				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "SENT", "WhatsApp document dispatched via paired desk gateway")
-			} else {
-				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "DISPATCHED (PREVIEW)", "Encrypted PDF & WhatsApp caption packaged in preview mode")
+			if err := SendWhatsAppStatement(cfg, whatsapp, meta, renamedFile, encryptedPDF, rawPassword); err != nil {
+				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "FAILED", err.Error())
+				writeJSON(w, 502, map[string]any{"ok": false, "error": "WhatsApp error: " + err.Error()})
+				return
 			}
+			_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "SENT", "WhatsApp document dispatched via paired desk gateway")
 			delivered = append(delivered, "WHATSAPP")
 		}
 
@@ -600,7 +565,6 @@ func main() {
 
 		writeJSON(w, 200, map[string]any{
 			"ok":               true,
-			"deliveryMode":     cfg.DeliveryMode,
 			"memberNo":         meta.MemberNo,
 			"memberName":       meta.MemberName,
 			"period":           meta.Period,
@@ -613,7 +577,6 @@ func main() {
 			"destination":      strings.Join(destParts, " · "),
 			"timestamp":        time.Now().Format("02 Jan 2006 15:04:05"),
 			"passwordGuide":    passwordGuide,
-			"downloadUrl":      "/api/download/" + downloadToken,
 			"emailPreview": map[string]string{
 				"subject":      subject,
 				"htmlBody":     htmlBody,
@@ -621,20 +584,6 @@ func main() {
 				"whatsappText": whatsappText,
 			},
 		})
-	})
-
-	mux.HandleFunc("/api/download/", func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.URL.Path, "/api/download/")
-		pdfCacheMu.Lock()
-		entry, ok := pdfCache[token]
-		pdfCacheMu.Unlock()
-		if !ok || entry.expiresAt.Before(time.Now()) {
-			writeJSON(w, 404, map[string]any{"ok": false, "error": "Protected PDF link expired. Re-run dispatch to generate a new copy."})
-			return
-		}
-		w.Header().Set("Content-Type", "application/pdf")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", entry.filename))
-		_, _ = w.Write(entry.data)
 	})
 
 	// Admin Auth endpoints

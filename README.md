@@ -126,6 +126,5 @@ git push origin v1.0.0
 | `POST /api/whatsapp/unlink` | Admin | Remove paired WhatsApp device |
 | `POST /api/verify-statement-file` | Public (post-setup) | Reject non-PDF or non-NSSF statement files immediately on upload |
 | `POST /api/validate` | Public (post-setup) | Validate uploaded PDF against NSSF Member No |
-| `POST /api/dispatch` | Public (post-setup) | Encrypt PDF & dispatch via Email / WhatsApp |
-| `GET /api/download/:token` | Public | Download freshly encrypted statement PDF |
+| `POST /api/dispatch` | Public (post-setup) | Encrypt PDF & dispatch live via Email / WhatsApp |
 | `GET /api/audit` | Admin | Fetch persistent compliance audit logs |

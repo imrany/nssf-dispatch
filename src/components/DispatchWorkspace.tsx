@@ -194,8 +194,8 @@ export function DispatchWorkspace() {
       });
       setPreviewOpen(false);
       toast.success(
-        data.deliveryMode === 'live' ? 'Statement dispatched' : 'Statement packaged (Preview)',
-        `${data.renamedFile} encrypted and logged to SQLite.`
+        'Statement dispatched',
+        `${data.renamedFile} encrypted and dispatched to member.`
       );
       setReceipt(data);
     } catch (err) {
@@ -467,9 +467,7 @@ export function DispatchWorkspace() {
         </div>
 
         <div className="text-xs text-slate-500 flex items-center gap-2">
-          <span>
-            {settings.deliveryMode === 'live' ? 'Live SMTP & WhatsApp' : 'Preview Mode'}
-          </span>
+          <span>Live SMTP &amp; WhatsApp</span>
           <span aria-hidden="true">·</span>
           <button
             type="button"

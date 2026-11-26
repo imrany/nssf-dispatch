@@ -42,7 +42,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   emailEnabled: true,
   emailConfigured: false,
   whatsappEnabled: true,
-  deliveryMode: 'preview',
   whatsappBridgeUrl: 'whatsmeow://native',
   whatsappPaired: false,
   whatsappDeviceName: 'NSSF Service Desk Terminal 01',

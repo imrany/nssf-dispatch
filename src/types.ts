@@ -27,7 +27,6 @@ export interface ValidationResponse {
 
 export interface DispatchReceipt {
   ok: boolean;
-  deliveryMode: 'live' | 'preview';
   memberNo: string;
   memberName: string;
   period: string;
@@ -40,7 +39,6 @@ export interface DispatchReceipt {
   destination: string;
   timestamp: string;
   passwordGuide: string;
-  downloadUrl: string;
   emailPreview: {
     subject: string;
     htmlBody: string;
@@ -61,7 +59,6 @@ export interface AppSettings {
   emailEnabled: boolean;
   emailConfigured?: boolean;
   whatsappEnabled: boolean;
-  deliveryMode: 'live' | 'preview';
   whatsappBridgeUrl: string;
   whatsappPaired: boolean;
   whatsappDeviceName: string;

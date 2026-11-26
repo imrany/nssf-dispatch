@@ -20,7 +20,7 @@ import { toast } from './Toaster';
 import { ActionButton, BackButton, PageHeader } from './ui';
 
 type ChannelFilter = 'ALL' | 'EMAIL' | 'WHATSAPP' | 'BOTH';
-type StatusFilter = 'ALL' | 'SENT' | 'DISPATCHED (PREVIEW)' | 'FAILED' | 'VALIDATION_FAILED';
+type StatusFilter = 'ALL' | 'SENT' | 'FAILED' | 'VALIDATION_FAILED';
 
 export function AuditLogsView() {
   const { appName, adminToken, navigateTo, logoutAdmin } = useApp();
@@ -296,8 +296,7 @@ export function AuditLogsView() {
                     className="h-9 px-2.5 rounded-md border border-slate-300 bg-white text-xs font-medium text-[#0F2437] focus:outline-none focus:border-[#2B7A3B] cursor-pointer"
                   >
                     <option value="ALL">All Outcomes</option>
-                    <option value="SENT">Live Sent</option>
-                    <option value="DISPATCHED (PREVIEW)">Preview Dispatched</option>
+                    <option value="SENT">Sent</option>
                     <option value="FAILED">Delivery Failed</option>
                     <option value="VALIDATION_FAILED">Validation Failed</option>
                   </select>

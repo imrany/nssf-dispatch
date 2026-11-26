@@ -1,10 +1,13 @@
 import { useState, type CSSProperties } from 'react';
 import { Download, FileKey2, Mail, MessageSquare } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
+import { useApp } from '../context/AppContext';
 import type { DispatchReceipt } from '../types';
 import { SMOOTH_EASE } from '../utils/constants';
+import { buildDispatchReceiptPdfBlob, triggerBlobDownload } from '../utils/download';
 import { NssfLogo } from './NssfLogo';
-import { ActionButton, AlertBanner, KeyValueList, type KeyValueItem } from './ui';
+import { toast } from './Toaster';
+import { ActionButton, KeyValueList, type KeyValueItem } from './ui';
 
 interface DispatchSuccessProps {
   receipt: DispatchReceipt;
@@ -18,9 +21,27 @@ function delayStyle(ms: number): CSSProperties {
 }
 
 export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
+  const { appName, publisher, officeLocation, ussdCode } = useApp();
   const [previewTab, setPreviewTab] = useState<'email' | 'text'>(
     receipt.channel === 'WHATSAPP' ? 'text' : 'email'
   );
+
+  const handleDownloadReceipt = () => {
+    const safeMemberNo = (receipt.memberNo || 'MEMBER').replace(/[^A-Za-z0-9_-]/g, '');
+    const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const receiptFilename = `NSSF_Dispatch_Receipt_${safeMemberNo}_${dateStamp}.pdf`;
+    const blob = buildDispatchReceiptPdfBlob(receipt, {
+      appName,
+      publisher,
+      officeLocation,
+      ussdCode,
+    });
+    triggerBlobDownload(blob, receiptFilename);
+    toast.success(
+      'Dispatch receipt downloaded',
+      `${receiptFilename} saved for ${receipt.memberName}.`
+    );
+  };
 
   const receiptRows: KeyValueItem[] = [
     { label: 'Member Name', value: receipt.memberName, delayMs: 260 },
@@ -144,32 +165,22 @@ export function DispatchSuccess({ receipt, onReset }: DispatchSuccessProps) {
           className="dispatch-animate-up flex flex-wrap items-center gap-3 shrink-0"
           style={delayStyle(160)}
         >
-          <motion.a
+          <motion.button
+            type="button"
             whileHover={{ y: -1 }}
             whileTap={{ scale: 0.99 }}
             transition={{ duration: 0.16, ease: SMOOTH_EASE }}
-            href={receipt.downloadUrl}
-            download={receipt.renamedFile}
-            className="dispatch-cta-sheen inline-flex items-center gap-2 px-5 h-11 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-wider uppercase transition-colors whitespace-nowrap"
+            onClick={handleDownloadReceipt}
+            className="dispatch-cta-sheen inline-flex items-center gap-2 px-5 h-11 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold tracking-wider uppercase transition-colors whitespace-nowrap cursor-pointer"
           >
             <Download className="w-4 h-4" aria-hidden="true" />
-            <span>DOWNLOAD PROTECTED PDF</span>
-          </motion.a>
+            <span>DOWNLOAD DISPATCH RECEIPT</span>
+          </motion.button>
           <ActionButton variant="lime" onClick={onReset} className="h-11 px-5">
             <span>NEW DISPATCH</span>
           </ActionButton>
         </div>
       </div>
-
-      {receipt.deliveryMode === 'preview' && (
-        <div className="dispatch-animate-up" style={delayStyle(190)}>
-          <AlertBanner
-            variant="warning"
-            className="text-xs"
-            message="Packaged in Preview Mode: the PDF has been RC4-128 encrypted, renamed, and logged to SQLite. Switch to Live SMTP & WhatsApp in Settings when ready to transmit externally."
-          />
-        </div>
-      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <section
