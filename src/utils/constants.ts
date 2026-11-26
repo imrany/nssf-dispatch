@@ -40,6 +40,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hasSmtpPass: false,
   smtpFrom: 'NSSF Kenya Member Services <statements@nssfkenya.co.ke>',
   emailEnabled: true,
+  emailConfigured: false,
   whatsappEnabled: true,
   deliveryMode: 'preview',
   whatsappBridgeUrl: 'whatsmeow://native',

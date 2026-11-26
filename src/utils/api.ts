@@ -192,6 +192,17 @@ export function logoutAdminApi(token: string): Promise<{ ok: boolean }> {
   });
 }
 
+export function verifyStatementFileApi(
+  file: File
+): Promise<{ ok: boolean; error?: string }> {
+  const formData = new FormData();
+  formData.append('statement', file);
+  return requestJson<{ ok: boolean; error?: string }>('/api/verify-statement-file', {
+    method: 'POST',
+    body: formData,
+  });
+}
+
 export function validateStatementApi(
   memberNo: string,
   file: File

@@ -120,16 +120,164 @@ foreach ($targetDir in @(
 Write-Host "Desktop and Start Menu shortcuts created."
 EOF
 
+  cat > "$WIN_STAGE/Uninstall-NSSF-Dispatch.ps1" << 'EOF'
+$ErrorActionPreference = "SilentlyContinue"
+Get-Process -Name "NSSF-Statement-Dispatch-windows-amd64" | Stop-Process -Force
+Start-Sleep -Milliseconds 300
+
+foreach ($targetDir in @(
+  [Environment]::GetFolderPath("Desktop"),
+  (Join-Path ([Environment]::GetFolderPath("StartMenu")) "Programs")
+)) {
+  $lnkPath = Join-Path $targetDir "NSSF Digital Statement Dispatcher.lnk"
+  if (Test-Path $lnkPath) {
+    Remove-Item -Force $lnkPath
+  }
+}
+
+foreach ($dataDir in @(
+  (Join-Path $env:APPDATA "nssf-dispatch"),
+  (Join-Path $env:LOCALAPPDATA "nssf-dispatch"),
+  (Join-Path $env:USERPROFILE ".nssf-dispatch")
+)) {
+  if ($dataDir -and (Test-Path $dataDir)) {
+    Remove-Item -Recurse -Force $dataDir
+    Write-Host "Removed hidden application data: $dataDir"
+  }
+}
+Write-Host "Uninstalled NSSF Digital Statement Dispatcher shortcuts and user data."
+EOF
+
   cat > "$WIN_STAGE/SETUP.txt" << 'EOF'
 NSSF Digital Statement Dispatcher — Windows Setup
 ==================================================
-1. Extract this ZIP folder to a permanent folder (e.g. C:\NSSF-Dispatch).
-2. Double-click "NSSF-Statement-Dispatch-windows-amd64.exe" (or "Start-NSSF-Dispatch.bat").
-   The portal automatically opens in your default browser at http://127.0.0.1:8080.
-3. Optional: Right-click "Install-Shortcut.ps1" -> "Run with PowerShell" to add Desktop & Start Menu icons.
+Option A (Recommended — Windows Installer):
+  Double-click "NSSF-Statement-Dispatch-windows-amd64.msi" to install
+  with Start Menu & Desktop shortcuts, app icon, and clean uninstall support.
+
+Option B (Portable ZIP):
+  1. Extract this ZIP folder to a permanent folder (e.g. C:\NSSF-Dispatch).
+  2. Double-click "NSSF-Statement-Dispatch-windows-amd64.exe" (or "Start-NSSF-Dispatch.bat").
+     The portal automatically opens in your default browser at http://127.0.0.1:8080.
+  3. Database & configuration are stored privately in %AppData%\nssf-dispatch.
+  4. Optional: Right-click "Install-Shortcut.ps1" -> "Run with PowerShell" to add shortcuts,
+     or run "Uninstall-NSSF-Dispatch.ps1" to remove shortcuts and stored database files.
 EOF
 
   (cd "$WIN_STAGE" && zip -q -r "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.zip" .)
+fi
+
+# --- Windows amd64 .msi Installer (via GNOME msitools wixl) ---
+if command -v wixl >/dev/null 2>&1; then
+  WIN_MSI_STAGE="$RELEASE_DIR/.stage/windows-msi"
+  mkdir -p "$WIN_MSI_STAGE"
+  cat > "$WIN_MSI_STAGE/nssf-installer.wxs" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="${APP_NAME}"
+           Language="1033"
+           Version="${VER_MAJOR}.${VER_MINOR}.${VER_PATCH}"
+           Manufacturer="${APP_PUBLISHER}"
+           UpgradeCode="6E2B8D4A-9F1C-4B6A-8D2E-1C4A7F9E3B10">
+
+    <Package InstallerVersion="301"
+             Description="${APP_NAME} Windows Installer"
+             Compressed="yes"
+             InstallScope="perMachine"
+             SummaryCodepage="1252" />
+
+    <Media Id="1" Cabinet="nssf.cab" EmbedCab="yes" />
+
+    <Icon Id="AppIcon.ico" SourceFile="$GO_DIR/packaging/windows/nssf.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPHELPLINK" Value="https://nssfdigital.enssf.co.ke" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="ManufacturerFolder" Name="National Social Security Fund">
+          <Directory Id="INSTALLDIR" Name="NSSF Digital Statement Dispatcher">
+            <Component Id="MainAppComponent" Guid="A3B9C1D2-4E5F-4A6B-8C7D-9E0F1A2B3C4D" Win64="yes">
+              <File Id="AppExecutable"
+                    Name="NSSF-Statement-Dispatch-windows-amd64.exe"
+                    Source="$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.exe"
+                    KeyPath="yes" />
+            </Component>
+            <Component Id="AppIconComponent" Guid="B4C0D2E3-5F6A-4B7C-9D8E-0F1A2B3C4D5E" Win64="yes">
+              <File Id="AppIconFile"
+                    Name="nssf.ico"
+                    Source="$GO_DIR/packaging/windows/nssf.ico"
+                    KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="NSSF Digital Statement Dispatcher" />
+      </Directory>
+
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcutComponent" Guid="C5D1E3F4-6A7B-4C8D-8E9F-1A2B3C4D5E6F" Win64="yes">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="${APP_NAME}"
+                  Description="Validate, password-protect, and securely dispatch NSSF member statements"
+                  Target="[INSTALLDIR]NSSF-Statement-Dispatch-windows-amd64.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="AppIcon.ico" />
+        <RemoveFolder Id="RemoveStartMenuFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\NSSF\DigitalStatementDispatcher"
+                       Name="StartMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcutComponent" Guid="D6E2F4A5-7B8C-4D9E-9F0A-2B3C4D5E6F70" Win64="yes">
+        <Shortcut Id="DesktopShortcut"
+                  Name="${APP_NAME}"
+                  Description="Launch NSSF Digital Statement Dispatcher"
+                  Target="[INSTALLDIR]NSSF-Statement-Dispatch-windows-amd64.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="AppIcon.ico" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\NSSF\DigitalStatementDispatcher"
+                       Name="DesktopShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Complete" Title="${APP_NAME}" Level="1">
+      <ComponentRef Id="MainAppComponent" />
+      <ComponentRef Id="AppIconComponent" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="DesktopShortcutComponent" />
+    </Feature>
+
+    <CustomAction Id="CleanupDataOnUninstall"
+                  FileKey="AppExecutable"
+                  ExeCommand="--cleanup-data"
+                  Execute="immediate"
+                  Return="ignore"
+                  Impersonate="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CleanupDataOnUninstall" Before="RemoveFiles"><![CDATA[REMOVE="ALL"]]></Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>
+EOF
+  wixl -o "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.msi" --arch x64 "$WIN_MSI_STAGE/nssf-installer.wxs"
+else
+  echo "Warning: wixl (msitools) not found; skipping Windows .msi installer generation."
 fi
 
 # --- Linux / Ubuntu (amd64 & arm64) binaries + .tar.gz bundles + .deb installers ---
@@ -182,7 +330,8 @@ for arg in "$@"; do
   esac
 done
 
-mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
+mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR" "${HOME}/.config/nssf-dispatch"
+chmod 700 "${HOME}/.config/nssf-dispatch"
 install -m 755 "$SCRIPT_DIR/nssf-statement-dispatch" "$TARGET_BIN"
 install -m 644 "$SCRIPT_DIR/nssf-dispatch.png" "$TARGET_ICON"
 
@@ -239,6 +388,7 @@ echo " Installed NSSF Digital Statement Dispatcher"
 echo " Binary:   $TARGET_BIN"
 echo " Launcher: $APP_DIR/nssf-dispatch.desktop"
 echo " Icon:     $TARGET_ICON"
+echo " Data Dir: ${HOME}/.config/nssf-dispatch (hidden user storage)"
 echo "============================================================"
 
 if [[ "$LAUNCH_NOW" == "true" ]] && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
@@ -256,13 +406,15 @@ set -euo pipefail
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user disable --now nssf-dispatch.service >/dev/null 2>&1 || true
 fi
+pkill -x nssf-statement-dispatch >/dev/null 2>&1 || true
 rm -f "${HOME}/.config/systemd/user/nssf-dispatch.service"
 rm -f "${HOME}/.local/bin/nssf-statement-dispatch"
 rm -f "${HOME}/.local/share/applications/nssf-dispatch.desktop"
 rm -f "${HOME}/Desktop/nssf-dispatch.desktop"
 rm -f "${HOME}/.local/share/icons/hicolor/512x512/apps/nssf-dispatch.png"
+rm -rf "${HOME}/.config/nssf-dispatch" "${HOME}/.local/share/nssf-dispatch" "${HOME}/.nssf-dispatch"
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
-echo "Uninstalled NSSF Digital Statement Dispatcher."
+echo "Uninstalled NSSF Digital Statement Dispatcher and removed stored user database & config."
 EOF
   chmod 755 "$stage/uninstall.sh"
 
@@ -363,10 +515,30 @@ POSTINST
     cat > "$deb_root/DEBIAN/prerm" << 'PRERM'
 #!/usr/bin/env bash
 set -e
-command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+pkill -x nssf-statement-dispatch >/dev/null 2>&1 || true
 exit 0
 PRERM
     chmod 755 "$deb_root/DEBIAN/prerm"
+
+    cat > "$deb_root/DEBIAN/postrm" << 'POSTRM'
+#!/usr/bin/env bash
+set -e
+if [[ "${1:-}" = "remove" || "${1:-}" = "purge" ]]; then
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    USER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+    if [[ -n "$USER_HOME" ]]; then
+      rm -rf "$USER_HOME/.config/nssf-dispatch" "$USER_HOME/.local/share/nssf-dispatch" "$USER_HOME/.nssf-dispatch"
+    fi
+  fi
+  for d in /home/*/.config/nssf-dispatch /home/*/.local/share/nssf-dispatch /home/*/.nssf-dispatch /root/.config/nssf-dispatch; do
+    [ -e "$d" ] && rm -rf "$d"
+  done
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+  command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+exit 0
+POSTRM
+    chmod 755 "$deb_root/DEBIAN/postrm"
 
     dpkg-deb --root-owner-group --build "$deb_root" "$RELEASE_DIR/$deb_name" >/dev/null
   else
@@ -415,14 +587,26 @@ open "\$TARGET_DIR/${APP_NAME}.app"
 EOF
   chmod 755 "$stage/install-macos.sh"
 
+  cat > "$stage/uninstall-macos.sh" << EOF
+#!/usr/bin/env bash
+set -euo pipefail
+pkill -f "nssf-statement-dispatch-darwin" >/dev/null 2>&1 || true
+rm -rf "/Applications/${APP_NAME}.app" "\${HOME}/Applications/${APP_NAME}.app"
+rm -rf "\${HOME}/Library/Application Support/nssf-dispatch" "\${HOME}/.config/nssf-dispatch" "\${HOME}/.nssf-dispatch"
+echo "Uninstalled ${APP_NAME} and removed stored application data."
+EOF
+  chmod 755 "$stage/uninstall-macos.sh"
+
   cat > "$stage/SETUP.txt" << EOF
 NSSF Digital Statement Dispatcher — macOS Setup
 ================================================
 1. Run ./install-macos.sh in Terminal (installs to Applications, clears Gatekeeper quarantine, and launches), OR
 2. Drag "${APP_NAME}.app" into /Applications, right-click -> Open on first launch.
+3. Database & configuration are stored privately in ~/Library/Application Support/nssf-dispatch.
+   Run ./uninstall-macos.sh to remove the app and all stored user data.
 EOF
 
-  tar -czf "$RELEASE_DIR/$bundle_tar" -C "$stage" "$APP_NAME.app" "install-macos.sh" "SETUP.txt"
+  tar -czf "$RELEASE_DIR/$bundle_tar" -C "$stage" "$APP_NAME.app" "install-macos.sh" "uninstall-macos.sh" "SETUP.txt"
 }
 
 package_macos amd64

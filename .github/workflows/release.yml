@@ -61,20 +61,21 @@ jobs:
           go-version: '1.26.x'
           cache: false
 
-      - name: Install cross-packaging tools (mingw-w64 & zip)
+      - name: Install cross-packaging tools (mingw-w64, zip, msitools)
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 zip
+          sudo apt-get install -y mingw-w64 zip msitools
 
       - name: Build frontend & cross-platform Go packages
         env:
           APP_VERSION: ${{ steps.meta.outputs.version }}
         run: bash go/build.sh
 
-      - name: Verify Linux binary & .deb package metadata
+      - name: Verify Linux binary, .deb, and Windows .msi metadata
         run: |
           ./go/release/nssf-statement-dispatch-linux-amd64 --version
           dpkg-deb -I ./go/release/NSSF-Statement-Dispatch-linux-amd64.deb
+          msiinfo suminfo ./go/release/NSSF-Statement-Dispatch-windows-amd64.msi
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')

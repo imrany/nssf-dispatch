@@ -313,13 +313,32 @@ func reconstructContentStreamRows(streamText string) []string {
 	return out
 }
 
-func ExtractAndValidatePDF(pdfBytes []byte, expectedMemberNo string) (*StatementMeta, error) {
-	if len(pdfBytes) < 8 || !strings.Contains(string(pdfBytes[:8]), "%PDF-") {
-		return nil, errors.New("the uploaded file is not a valid PDF document")
+func hasValidPDFStructure(pdfBytes []byte) bool {
+	if len(pdfBytes) < 64 {
+		return false
+	}
+	headLen := 32
+	if len(pdfBytes) < headLen {
+		headLen = len(pdfBytes)
+	}
+	head := strings.TrimLeft(string(pdfBytes[:headLen]), "\xef\xbb\xbf\r\n\t ")
+	if !strings.HasPrefix(head, "%PDF-") {
+		return false
+	}
+	raw := string(pdfBytes)
+	return strings.Contains(raw, "obj") && strings.Contains(raw, "endobj")
+}
+
+func parseAndVerifyNSSFStatement(pdfBytes []byte) (*StatementMeta, error) {
+	if !hasValidPDFStructure(pdfBytes) {
+		return nil, errors.New("rejected: the uploaded file is not a valid PDF document")
 	}
 
 	streamRe := regexp.MustCompile(`(?s)(<<.*?>>)\s*stream\r?\n(.*?)\r?\n?endstream`)
 	matches := streamRe.FindAllStringSubmatch(string(pdfBytes), -1)
+	if len(matches) == 0 {
+		return nil, errors.New("rejected: this PDF does not contain readable NSSF statement content")
+	}
 
 	var allRows []string
 	for _, m := range matches {
@@ -343,20 +362,35 @@ func ExtractAndValidatePDF(pdfBytes []byte, expectedMemberNo string) (*Statement
 	}
 
 	fullText := strings.Join(allRows, "\n")
-	memberNo := findField(fullText, `(?i)NSSF Member No:\s*([A-Z0-9]+)`)
-	if memberNo == "" {
-		return nil, errors.New("could not read NSSF Member Number from uploaded PDF")
-	}
-	if strings.TrimSpace(expectedMemberNo) == "" {
-		return nil, errors.New("please enter the Member NSSF Number before validating")
-	}
-	if !strings.EqualFold(strings.TrimSpace(memberNo), strings.TrimSpace(expectedMemberNo)) {
-		return nil, fmt.Errorf("validation mismatch: entered NSSF Number (%s) does not match statement (%s)", expectedMemberNo, memberNo)
+	if len(strings.TrimSpace(fullText)) < 40 {
+		return nil, errors.New("rejected: this PDF contains no readable NSSF statement text. Only official digital NSSF Member Statement PDFs are accepted")
 	}
 
+	lowerText := strings.ToLower(fullText)
+	memberNo := findField(fullText, `(?i)NSSF Member No:\s*([A-Z0-9]+)`)
 	idCard := findField(fullText, `(?i)Id Card No:\s*([A-Z0-9]+)`)
-	if idCard == "" {
-		return nil, errors.New("member ID Card Number missing in statement; cannot password-protect")
+	memberName := findField(fullText, `(?i)Member Name:\s*([A-Za-z0-9\s.'-]+?)(?:\s+KRA Pin No:|\s+Date of Birth:|\s+Benefit Type|\n|$)`)
+
+	indicatorScore := 0
+	for _, marker := range []string{
+		"national social security fund",
+		"provisional member statement",
+		"employer:",
+		"kra pin",
+		"date of birth:",
+		"date registered:",
+		"period from",
+		"standard:",
+		"voluntary:",
+		"total amount:",
+	} {
+		if strings.Contains(lowerText, marker) {
+			indicatorScore++
+		}
+	}
+
+	if memberNo == "" || idCard == "" || memberName == "" || indicatorScore < 2 {
+		return nil, errors.New("rejected: this file is not an official NSSF Member Statement PDF (missing required NSSF statement fields)")
 	}
 
 	employer := findField(fullText, `(?i)Employer:\s*([A-Z0-9\s&.,'-]+?)(?:\s+Interest \(New Fund\):|\n|$)`)
@@ -372,7 +406,7 @@ func ExtractAndValidatePDF(pdfBytes []byte, expectedMemberNo string) (*Statement
 
 	meta := &StatementMeta{
 		MemberNo:        memberNo,
-		MemberName:      defaultStr(findField(fullText, `(?i)Member Name:\s*([A-Za-z0-9\s.'-]+?)(?:\s+KRA Pin No:|\s+Date of Birth:|\s+Benefit Type|\n|$)`), "NSSF Member"),
+		MemberName:      memberName,
 		IDCardNo:        idCard,
 		MaskedIDCardNo:  maskSecret(idCard),
 		DateOfBirth:     findField(fullText, `(?i)Date of Birth:\s*([0-9]{2}[./-][0-9]{2}[./-][0-9]{4})`),
@@ -384,6 +418,26 @@ func ExtractAndValidatePDF(pdfBytes []byte, expectedMemberNo string) (*Statement
 		StandardAmount:  defaultStr(findField(fullText, `(?i)Standard:\s*([0-9,]+\.[0-9]{2})`), "0.00"),
 		VoluntaryAmount: defaultStr(findField(fullText, `(?i)Voluntary:\s*([0-9,]+\.[0-9]{2})`), "0.00"),
 		TotalAmount:     defaultStr(findField(fullText, `(?i)Total Amount:\s*([0-9,]+\.[0-9]{2})`), "0.00"),
+	}
+	return meta, nil
+}
+
+// VerifyNSSFStatementFile verifies that an uploaded file is a genuine NSSF Member Statement PDF without returning PII.
+func VerifyNSSFStatementFile(pdfBytes []byte) error {
+	_, err := parseAndVerifyNSSFStatement(pdfBytes)
+	return err
+}
+
+func ExtractAndValidatePDF(pdfBytes []byte, expectedMemberNo string) (*StatementMeta, error) {
+	meta, err := parseAndVerifyNSSFStatement(pdfBytes)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(expectedMemberNo) == "" {
+		return nil, errors.New("please enter the Member NSSF Number before validating")
+	}
+	if !strings.EqualFold(strings.TrimSpace(meta.MemberNo), strings.TrimSpace(expectedMemberNo)) {
+		return nil, fmt.Errorf("validation mismatch: entered NSSF Number (%s) does not match statement (%s)", expectedMemberNo, meta.MemberNo)
 	}
 	return meta, nil
 }

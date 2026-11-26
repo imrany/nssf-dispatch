@@ -11,11 +11,12 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import type { DispatchChannel, StatementMeta } from '../types';
-import { dispatchStatementApi, validateStatementApi } from '../utils/api';
+import { dispatchStatementApi, validateStatementApi, verifyStatementFileApi } from '../utils/api';
 import { ROUTES, SMOOTH_EASE } from '../utils/constants';
 import {
   MAX_PDF_BYTES,
   formatFileSizeKb,
+  hasPdfMagicHeader,
   isPdfFile,
   isValidEmail,
   isValidWhatsappNumber,
@@ -40,6 +41,7 @@ export function DispatchWorkspace() {
   const [whatsapp, setWhatsapp] = useState('');
 
   const [validating, setValidating] = useState(false);
+  const [checkingFile, setCheckingFile] = useState(false);
   const [validatedMeta, setValidatedMeta] = useState<StatementMeta | null>(null);
   const [predictedFilename, setPredictedFilename] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -48,6 +50,7 @@ export function DispatchWorkspace() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const dragDepthRef = useRef(0);
+  const uploadCheckIdRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const shortcutHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
 
@@ -91,9 +94,29 @@ export function DispatchWorkspace() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const noChannelsEnabled = !settings.emailEnabled && !settings.whatsappEnabled;
+  const emailConfigured = Boolean(settings.emailConfigured ?? settings.hasSmtpPass);
+  const whatsappConfigured = Boolean(settings.whatsappPaired);
+  const emailReady = settings.emailEnabled && emailConfigured;
+  const whatsappReady = settings.whatsappEnabled && whatsappConfigured;
+  const bothReady = emailReady && whatsappReady;
+  const noChannelsReady = !emailReady && !whatsappReady;
+  const uploadBusy = validating || checkingFile;
+
+  useEffect(() => {
+    if (step === 'select') return;
+    if (
+      (channel === 'email' && !emailReady) ||
+      (channel === 'whatsapp' && !whatsappReady) ||
+      (channel === 'both' && !bothReady)
+    ) {
+      setStep('select');
+    }
+  }, [step, channel, emailReady, whatsappReady, bothReady]);
 
   const handleSelectChannel = (chosen: DispatchChannel) => {
+    if (chosen === 'email' && !emailReady) return;
+    if (chosen === 'whatsapp' && !whatsappReady) return;
+    if (chosen === 'both' && !bothReady) return;
     setChannel(chosen);
     setHoveredCard(null);
     setErrorMsg('');
@@ -103,7 +126,7 @@ export function DispatchWorkspace() {
 
   const handleValidateStep = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (validating) return;
+    if (uploadBusy) return;
     setErrorMsg('');
 
     if (!memberNo.trim()) {
@@ -208,14 +231,19 @@ export function DispatchWorkspace() {
     }
 
     e.preventDefault();
-    if (validating || submitting) return;
+    if (uploadBusy || submitting) return;
 
     const emailValid = isValidEmail(email);
     const whatsappValid = isValidWhatsappNumber(whatsapp);
 
     if (key === 'e') {
-      if (!settings.emailEnabled) {
-        toast.warning('Email channel disabled', 'Enable Email in System Settings to use Ctrl+E.');
+      if (!emailReady) {
+        toast.warning(
+          'Email channel unavailable',
+          !settings.emailEnabled
+            ? 'Enable Email in System Settings to use Ctrl+E.'
+            : 'Configure SMTP host, user, and password in System Settings to use Ctrl+E.'
+        );
         return;
       }
       if (step === 'select') {
@@ -244,10 +272,12 @@ export function DispatchWorkspace() {
     }
 
     if (key === 'w') {
-      if (!settings.whatsappEnabled) {
+      if (!whatsappReady) {
         toast.warning(
-          'WhatsApp channel disabled',
-          'Enable WhatsApp in System Settings to use Ctrl+W.'
+          'WhatsApp channel unavailable',
+          !settings.whatsappEnabled
+            ? 'Enable WhatsApp in System Settings to use Ctrl+W.'
+            : 'Pair a WhatsApp device QR code in System Settings to use Ctrl+W.'
         );
         return;
       }
@@ -280,10 +310,10 @@ export function DispatchWorkspace() {
     }
 
     if (key === 'b') {
-      if (!settings.emailEnabled || !settings.whatsappEnabled) {
+      if (!bothReady) {
         toast.warning(
           'Dual channel unavailable',
-          'Enable both Email and WhatsApp in System Settings to use Ctrl+B.'
+          'Both Email (SMTP) and WhatsApp must be enabled and set up in System Settings to use Ctrl+B.'
         );
         return;
       }
@@ -315,28 +345,70 @@ export function DispatchWorkspace() {
     }
   };
 
-  const acceptSelectedFile = (candidate: File | null | undefined) => {
-    if (validating || !candidate) return;
+  const acceptSelectedFile = async (candidate: File | null | undefined) => {
+    if (uploadBusy || !candidate) return;
     if (!isPdfFile(candidate)) {
-      const msg = `"${candidate.name}" is not a PDF file. Please drop a valid NSSF statement PDF.`;
+      const msg = `Rejected "${candidate.name}": only official NSSF statement PDF files are accepted.`;
+      setFile(null);
+      setValidatedMeta(null);
       setErrorMsg(msg);
       toast.warning('Unsupported file format', msg);
       return;
     }
     if (candidate.size > MAX_PDF_BYTES) {
       const msg = 'Statement PDF exceeds the 15 MB maximum upload size.';
+      setFile(null);
+      setValidatedMeta(null);
       setErrorMsg(msg);
       toast.warning('File too large', msg);
       return;
     }
+
+    const hasMagic = await hasPdfMagicHeader(candidate);
+    if (!hasMagic) {
+      const msg = `Rejected "${candidate.name}": file is not a genuine PDF document.`;
+      setFile(null);
+      setValidatedMeta(null);
+      setErrorMsg(msg);
+      toast.error('Invalid PDF file', msg);
+      return;
+    }
+
+    const checkId = ++uploadCheckIdRef.current;
+    setCheckingFile(true);
     setErrorMsg('');
-    setFile(candidate);
+    setValidatedMeta(null);
+    setPredictedFilename('');
+
+    try {
+      await verifyStatementFileApi(candidate);
+      if (uploadCheckIdRef.current !== checkId) return;
+      setFile(candidate);
+      toast.success(
+        'NSSF statement attached',
+        `${candidate.name} verified as an official NSSF Member Statement PDF.`
+      );
+    } catch (err) {
+      if (uploadCheckIdRef.current !== checkId) return;
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Rejected: uploaded file is not an official NSSF Member Statement PDF.';
+      setFile(null);
+      setValidatedMeta(null);
+      setErrorMsg(msg);
+      toast.error('Non-NSSF file rejected', msg);
+    } finally {
+      if (uploadCheckIdRef.current === checkId) {
+        setCheckingFile(false);
+      }
+    }
   };
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (validating) return;
+    if (uploadBusy) return;
     dragDepthRef.current += 1;
     setDragOver(true);
   };
@@ -344,13 +416,13 @@ export function DispatchWorkspace() {
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = validating ? 'none' : 'copy';
+    e.dataTransfer.dropEffect = uploadBusy ? 'none' : 'copy';
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (validating) return;
+    if (uploadBusy) return;
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
     if (dragDepthRef.current === 0) {
       setDragOver(false);
@@ -362,8 +434,8 @@ export function DispatchWorkspace() {
     e.stopPropagation();
     dragDepthRef.current = 0;
     setDragOver(false);
-    if (validating) return;
-    acceptSelectedFile(e.dataTransfer.files?.[0]);
+    if (uploadBusy) return;
+    void acceptSelectedFile(e.dataTransfer.files?.[0]);
   };
 
   const stepHeading =
@@ -373,8 +445,7 @@ export function DispatchWorkspace() {
         ? 'VALIDATION'
         : 'DISPATCH STATEMENT';
 
-  const bothHovered =
-    hoveredCard === 'both' && settings.emailEnabled && settings.whatsappEnabled;
+  const bothHovered = hoveredCard === 'both' && bothReady;
 
   return (
     <div className="py-4 sm:py-8 space-y-10">
@@ -410,26 +481,33 @@ export function DispatchWorkspace() {
         </div>
       </div>
 
-      {noChannelsEnabled && (
+      {noChannelsReady ? (
         <AlertBanner
           variant="warning"
-          message="All dispatch channels are currently disabled. Enable Email or WhatsApp in Settings to send statements."
+          message="No dispatch channels are ready yet. Configure SMTP Email credentials or pair a WhatsApp device in Settings before sending statements."
           actionLabel="OPEN SETTINGS"
           onAction={() => navigateTo(ROUTES.SETTINGS)}
         />
+      ) : (
+        <>
+          {settings.emailEnabled && !emailConfigured && (
+            <AlertBanner
+              variant="warning"
+              message="Email dispatch is disabled until SMTP host, username, and password are configured in Settings."
+              actionLabel="SETUP EMAIL"
+              onAction={() => navigateTo(ROUTES.SETTINGS)}
+            />
+          )}
+          {settings.whatsappEnabled && !whatsappConfigured && (
+            <AlertBanner
+              variant="warning"
+              message="WhatsApp dispatch is disabled until a WhatsApp device QR code is paired in Settings."
+              actionLabel="PAIR WHATSAPP"
+              onAction={() => navigateTo(ROUTES.SETTINGS)}
+            />
+          )}
+        </>
       )}
-
-      {settings.deliveryMode === 'live' &&
-        settings.whatsappEnabled &&
-        !settings.whatsappPaired &&
-        (step === 'select' || channel === 'whatsapp' || channel === 'both') && (
-          <AlertBanner
-            variant="warning"
-            message="Live mode is active, but no WhatsApp device is paired yet. Open Settings and scan the WhatsApp QR code before sending live WhatsApp statements."
-            actionLabel="PAIR WHATSAPP"
-            onAction={() => navigateTo(ROUTES.SETTINGS)}
-          />
-        )}
 
       <AnimatePresence mode="wait" initial={false}>
         {step === 'select' && (
@@ -445,13 +523,15 @@ export function DispatchWorkspace() {
               <ChannelOptionCard
                 title="Email Statement"
                 subtitle={
-                  settings.emailEnabled
-                    ? 'Validate, encrypt & send via NSSF SMTP'
-                    : 'Email channel disabled'
+                  !settings.emailEnabled
+                    ? 'Email channel disabled in Settings'
+                    : !emailConfigured
+                      ? 'Email not set up — configure SMTP in Settings'
+                      : 'Validate, encrypt & send via NSSF SMTP'
                 }
                 shortcut="Ctrl+E"
-                enabled={settings.emailEnabled}
-                hovered={hoveredCard === 'email' && settings.emailEnabled}
+                enabled={emailReady}
+                hovered={hoveredCard === 'email' && emailReady}
                 onHoverChange={(isHov) =>
                   setHoveredCard((prev) =>
                     isHov ? 'email' : prev === 'email' ? null : prev
@@ -463,13 +543,15 @@ export function DispatchWorkspace() {
               <ChannelOptionCard
                 title="WhatsApp Statement"
                 subtitle={
-                  settings.whatsappEnabled
-                    ? 'Validate, encrypt & send via WhatsApp'
-                    : 'WhatsApp channel disabled'
+                  !settings.whatsappEnabled
+                    ? 'WhatsApp channel disabled in Settings'
+                    : !whatsappConfigured
+                      ? 'WhatsApp not set up — pair device in Settings'
+                      : 'Validate, encrypt & send via WhatsApp'
                 }
                 shortcut="Ctrl+W"
-                enabled={settings.whatsappEnabled}
-                hovered={hoveredCard === 'whatsapp' && settings.whatsappEnabled}
+                enabled={whatsappReady}
+                hovered={hoveredCard === 'whatsapp' && whatsappReady}
                 onHoverChange={(isHov) =>
                   setHoveredCard((prev) =>
                     isHov ? 'whatsapp' : prev === 'whatsapp' ? null : prev
@@ -479,7 +561,7 @@ export function DispatchWorkspace() {
               />
             </div>
 
-            {settings.emailEnabled && settings.whatsappEnabled && (
+            {bothReady && (
               <motion.button
                 type="button"
                 onClick={() => handleSelectChannel('both')}
@@ -543,13 +625,13 @@ export function DispatchWorkspace() {
                 label="Member Number"
                 required
                 type="text"
-                disabled={validating}
-                readOnly={validating}
+                disabled={uploadBusy}
+                readOnly={uploadBusy}
                 showPencilIcon
                 placeholder="MEMBER NUMBER"
                 value={memberNo}
                 onChange={(e) => {
-                  if (!validating) setMemberNo(e.target.value);
+                  if (!uploadBusy) setMemberNo(e.target.value);
                 }}
                 className="font-mono tabular-nums placeholder:tracking-wider"
               />
@@ -557,10 +639,10 @@ export function DispatchWorkspace() {
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="block text-sm font-medium text-[#0F2437]">
-                    Member Statement (PDF)
+                    Official NSSF Member Statement (PDF)
                   </span>
                   <span className="text-xs text-slate-500">
-                    Drag &amp; drop or browse · PDF up to 15 MB
+                    NSSF statements only · PDF up to 15 MB
                   </span>
                 </div>
 
@@ -570,21 +652,21 @@ export function DispatchWorkspace() {
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
                   onClick={() => {
-                    if (!validating) fileInputRef.current?.click();
+                    if (!uploadBusy) fileInputRef.current?.click();
                   }}
                   role="button"
-                  tabIndex={validating ? -1 : 0}
-                  aria-disabled={validating}
-                  aria-label="Upload member statement PDF via drag and drop or file browser"
+                  tabIndex={uploadBusy ? -1 : 0}
+                  aria-disabled={uploadBusy}
+                  aria-label="Upload official NSSF member statement PDF via drag and drop or file browser"
                   onKeyDown={(e) => {
-                    if (validating) return;
+                    if (uploadBusy) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       fileInputRef.current?.click();
                     }
                   }}
                   className={`relative rounded-lg border-2 border-dashed p-6 sm:p-8 transition-colors duration-150 select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2B7A3B] ${
-                    validating
+                    uploadBusy
                       ? 'border-slate-200 bg-slate-100/80 opacity-75 cursor-not-allowed'
                       : dragOver
                         ? 'border-[#2B7A3B] bg-emerald-50/80 shadow-[0_6px_24px_rgba(43,122,59,0.12)] cursor-pointer'
@@ -597,15 +679,29 @@ export function DispatchWorkspace() {
                     ref={fileInputRef}
                     type="file"
                     accept="application/pdf,.pdf"
-                    disabled={validating}
+                    disabled={uploadBusy}
                     className="sr-only"
                     onChange={(e) => {
-                      if (!validating) acceptSelectedFile(e.target.files?.[0]);
+                      if (!uploadBusy) void acceptSelectedFile(e.target.files?.[0]);
                       e.target.value = '';
                     }}
                   />
 
-                  {!file || dragOver ? (
+                  {checkingFile ? (
+                    <div className="flex flex-col items-center justify-center text-center gap-3 py-2">
+                      <div className="w-12 h-12 rounded-full bg-white border border-slate-200 text-[#2B7A3B] shadow-sm flex items-center justify-center">
+                        <RefreshCw className="w-5 h-5 animate-spin" aria-hidden="true" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-sm font-semibold text-[#0F2437]">
+                          Verifying NSSF statement format...
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Checking PDF signature and official NSSF member statement structure
+                        </p>
+                      </div>
+                    </div>
+                  ) : !file || dragOver ? (
                     <div className="flex flex-col items-center justify-center text-center gap-3 py-2">
                       <motion.div
                         animate={{ scale: dragOver ? 1.12 : 1, y: dragOver ? -2 : 0 }}
@@ -622,15 +718,15 @@ export function DispatchWorkspace() {
                       <div className="space-y-1">
                         <p className="text-sm font-semibold text-[#0F2437]">
                           {dragOver
-                            ? 'Drop statement PDF here to attach'
-                            : 'Drag & drop member statement PDF here'}
+                            ? 'Drop NSSF statement PDF here to attach'
+                            : 'Drag & drop official NSSF member statement PDF here'}
                         </p>
                         <p className="text-xs text-slate-500">
                           or{' '}
                           <span className="text-[#2B7A3B] font-semibold underline underline-offset-2">
                             browse files
                           </span>{' '}
-                          from this workstation
+                          from this workstation (non-NSSF files are rejected automatically)
                         </p>
                       </div>
                     </div>
@@ -657,7 +753,7 @@ export function DispatchWorkspace() {
                             <span className="text-[#1E6B34] font-medium">
                               {validating
                                 ? 'Locked during validation'
-                                : 'PDF attached · Drop another file to replace'}
+                                : 'Official NSSF PDF verified · Drop another to replace'}
                             </span>
                           </div>
                         </div>
@@ -666,13 +762,13 @@ export function DispatchWorkspace() {
                       <div className="flex items-center gap-2 shrink-0">
                         <motion.button
                           type="button"
-                          disabled={validating}
-                          whileHover={!validating ? { y: -1 } : undefined}
-                          whileTap={!validating ? { scale: 0.97 } : undefined}
+                          disabled={uploadBusy}
+                          whileHover={!uploadBusy ? { y: -1 } : undefined}
+                          whileTap={!uploadBusy ? { scale: 0.97 } : undefined}
                           transition={{ duration: 0.14, ease: SMOOTH_EASE }}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (!validating) fileInputRef.current?.click();
+                            if (!uploadBusy) fileInputRef.current?.click();
                           }}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-[#D1D9E0] bg-white text-xs font-semibold text-[#0F2437] hover:border-[#2B7A3B] hover:text-[#2B7A3B] disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
                         >
@@ -682,13 +778,13 @@ export function DispatchWorkspace() {
 
                         <motion.button
                           type="button"
-                          disabled={validating}
-                          whileHover={!validating ? { y: -1 } : undefined}
-                          whileTap={!validating ? { scale: 0.97 } : undefined}
+                          disabled={uploadBusy}
+                          whileHover={!uploadBusy ? { y: -1 } : undefined}
+                          whileTap={!uploadBusy ? { scale: 0.97 } : undefined}
                           transition={{ duration: 0.14, ease: SMOOTH_EASE }}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (validating) return;
+                            if (uploadBusy) return;
                             setFile(null);
                             setValidatedMeta(null);
                           }}
@@ -706,17 +802,21 @@ export function DispatchWorkspace() {
             </div>
 
             <div className="space-y-3 pt-2">
-              <ActionButton type="submit" fullWidth size="lg" disabled={validating}>
-                {validating ? 'VALIDATING STATEMENT...' : 'VALIDATE'}
+              <ActionButton type="submit" fullWidth size="lg" disabled={uploadBusy || !file}>
+                {validating
+                  ? 'VALIDATING STATEMENT...'
+                  : checkingFile
+                    ? 'VERIFYING UPLOAD...'
+                    : 'VALIDATE'}
               </ActionButton>
 
               <ActionButton
                 variant="lime"
                 fullWidth
                 size="lg"
-                disabled={validating}
+                disabled={uploadBusy}
                 onClick={() => {
-                  if (!validating) setStep('select');
+                  if (!uploadBusy) setStep('select');
                 }}
               >
                 BACK

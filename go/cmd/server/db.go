@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +24,7 @@ type AppSettings struct {
 	ClearSMTPPass           bool   `json:"clearSmtpPass,omitempty"`
 	SMTPFrom                string `json:"smtpFrom"`
 	EmailEnabled            bool   `json:"emailEnabled"`
+	EmailConfigured         bool   `json:"emailConfigured"`
 	WhatsAppEnabled         bool   `json:"whatsappEnabled"`
 	DeliveryMode            string `json:"deliveryMode"`
 	WhatsAppBridgeURL       string `json:"whatsappBridgeUrl"`
@@ -97,25 +100,38 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// getAppDataDir resolves a guaranteed-writable directory for SQLite databases and state.
-// Inside a source checkout (go.mod or package.json in CWD), it uses the current directory;
-// when launched as an installed binary or desktop app, it uses the OS user config/data directory.
+func isDevSourceCheckout() bool {
+	if os.Getenv("NSSF_DEV_LOCAL_DB") == "1" {
+		return true
+	}
+	if fileExists("go.mod") && fileExists(filepath.Join("cmd", "server", "main.go")) {
+		return true
+	}
+	if fileExists("package.json") && fileExists(filepath.Join("go", "go.mod")) {
+		return true
+	}
+	return false
+}
+
+// getAppDataDir resolves a hidden, user-scoped directory for SQLite databases and config.
+// Inside a local dev checkout it uses the current directory;
+// when launched as an installed binary or desktop app, it stores data inside hidden OS user folders.
 func getAppDataDir() string {
 	if p := strings.TrimSpace(os.Getenv("NSSF_DATA_DIR")); p != "" {
 		_ = os.MkdirAll(p, 0700)
 		return p
 	}
-	if fileExists("go.mod") || fileExists("package.json") || fileExists("nssf_dispatch.db") || fileExists("nssf_dispatch.db.state.json") {
+	if isDevSourceCheckout() {
 		return "."
 	}
 	if cfgDir, err := os.UserConfigDir(); err == nil && cfgDir != "" {
-		appDir := cfgDir + string(os.PathSeparator) + "nssf-dispatch"
+		appDir := filepath.Join(cfgDir, "nssf-dispatch")
 		if mkErr := os.MkdirAll(appDir, 0700); mkErr == nil {
 			return appDir
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		appDir := home + string(os.PathSeparator) + ".nssf-dispatch"
+		appDir := filepath.Join(home, ".nssf-dispatch")
 		if mkErr := os.MkdirAll(appDir, 0700); mkErr == nil {
 			return appDir
 		}
@@ -123,15 +139,75 @@ func getAppDataDir() string {
 	return "."
 }
 
+// GetUserDataDirsForCleanup returns all hidden user data directories created by installed runs.
+func GetUserDataDirsForCleanup() []string {
+	seen := map[string]bool{}
+	var dirs []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" || p == "." || p == "/" {
+			return
+		}
+		clean := filepath.Clean(p)
+		if clean == "." || clean == "/" {
+			return
+		}
+		if !seen[clean] {
+			seen[clean] = true
+			dirs = append(dirs, clean)
+		}
+	}
+
+	if p := strings.TrimSpace(os.Getenv("NSSF_DATA_DIR")); p != "" {
+		add(p)
+	}
+	if cfgDir, err := os.UserConfigDir(); err == nil && cfgDir != "" {
+		add(filepath.Join(cfgDir, "nssf-dispatch"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		add(filepath.Join(home, ".config", "nssf-dispatch"))
+		add(filepath.Join(home, ".local", "share", "nssf-dispatch"))
+		add(filepath.Join(home, ".nssf-dispatch"))
+	}
+	if runtime.GOOS == "windows" {
+		if ad := strings.TrimSpace(os.Getenv("APPDATA")); ad != "" {
+			add(filepath.Join(ad, "nssf-dispatch"))
+		}
+		if lad := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); lad != "" {
+			add(filepath.Join(lad, "nssf-dispatch"))
+		}
+	}
+	return dirs
+}
+
+// CleanupUserDataDirs removes stored SQLite DBs, WhatsApp device store, and config from user folders.
+func CleanupUserDataDirs() ([]string, error) {
+	var removed []string
+	var firstErr error
+	for _, dir := range GetUserDataDirsForCleanup() {
+		if _, err := os.Stat(dir); err == nil {
+			if rmErr := os.RemoveAll(dir); rmErr != nil {
+				if firstErr == nil {
+					firstErr = rmErr
+				}
+			} else {
+				removed = append(removed, dir)
+			}
+		}
+	}
+	return removed, firstErr
+}
+
 func getDBPath() string {
 	if p := strings.TrimSpace(os.Getenv("NSSF_DB_PATH")); p != "" {
+		_ = os.MkdirAll(filepath.Dir(p), 0700)
 		return p
 	}
 	dir := getAppDataDir()
 	if dir == "." {
 		return "nssf_dispatch.db"
 	}
-	return dir + string(os.PathSeparator) + "nssf_dispatch.db"
+	return filepath.Join(dir, "nssf_dispatch.db")
 }
 
 func getFallbackJSONPath() string {
@@ -342,15 +418,25 @@ func settingsFromMap(m map[string]string, pairedOverride *bool) AppSettings {
 	if pairedOverride != nil {
 		isPaired = *pairedOverride
 	}
+	smtpHost := defaultStr(m["smtpHost"], "smtp.nssfkenya.co.ke")
+	smtpPort := defaultStr(m["smtpPort"], "587")
+	smtpUser := m["smtpUser"]
+	smtpPass := m["smtpPass"]
+	emailConfigured := strings.TrimSpace(smtpHost) != "" &&
+		strings.TrimSpace(smtpPort) != "" &&
+		strings.TrimSpace(smtpUser) != "" &&
+		strings.TrimSpace(smtpPass) != ""
+
 	return AppSettings{
-		SMTPHost:                defaultStr(m["smtpHost"], "smtp.nssfkenya.co.ke"),
-		SMTPPort:                defaultStr(m["smtpPort"], "587"),
+		SMTPHost:                smtpHost,
+		SMTPPort:                smtpPort,
 		SMTPSecurity:            defaultStr(m["smtpSecurity"], "starttls"),
-		SMTPUser:                m["smtpUser"],
-		SMTPPass:                m["smtpPass"],
-		HasSMTPPass:             m["smtpPass"] != "",
+		SMTPUser:                smtpUser,
+		SMTPPass:                smtpPass,
+		HasSMTPPass:             smtpPass != "",
 		SMTPFrom:                defaultStr(m["smtpFrom"], "NSSF Kenya Member Services <statements@nssfkenya.co.ke>"),
 		EmailEnabled:            m["emailEnabled"] != "false",
+		EmailConfigured:         emailConfigured,
 		WhatsAppEnabled:         m["whatsappEnabled"] != "false",
 		DeliveryMode:            defaultStr(m["deliveryMode"], "preview"),
 		WhatsAppBridgeURL:       defaultStr(m["whatsappBridgeUrl"], "http://127.0.0.1:8095"),
@@ -415,6 +501,7 @@ func GetSafeWorkspaceSettings() AppSettings {
 		HasSMTPPass:             false,
 		SMTPFrom:                "",
 		EmailEnabled:            raw.EmailEnabled,
+		EmailConfigured:         raw.EmailConfigured,
 		WhatsAppEnabled:         raw.WhatsAppEnabled,
 		DeliveryMode:            defaultStr(raw.DeliveryMode, "preview"),
 		WhatsAppBridgeURL:       "",

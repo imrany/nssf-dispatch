@@ -21,6 +21,17 @@ export function isPdfFile(file: File): boolean {
   return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 }
 
+export async function hasPdfMagicHeader(file: File): Promise<boolean> {
+  if (file.size < 64) return false;
+  try {
+    const head = await file.slice(0, 32).text();
+    const cleaned = head.replace(/^\uFEFF/, '').trimStart();
+    return cleaned.startsWith('%PDF-');
+  } catch {
+    return false;
+  }
+}
+
 export function formatFileSizeKb(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KB`;
 }

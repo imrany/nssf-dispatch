@@ -59,6 +59,7 @@ export interface AppSettings {
   clearSmtpPass?: boolean;
   smtpFrom: string;
   emailEnabled: boolean;
+  emailConfigured?: boolean;
   whatsappEnabled: boolean;
   deliveryMode: 'live' | 'preview';
   whatsappBridgeUrl: string;

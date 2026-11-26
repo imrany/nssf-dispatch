@@ -183,22 +183,26 @@ X-Publisher=%s
 }
 
 func runSelfUninstall() {
-	if runtime.GOOS != "linux" {
-		fmt.Println("Desktop uninstaller applies to Linux/Ubuntu user installations.")
-		return
+	if runtime.GOOS == "linux" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			_ = os.Remove(filepath.Join(home, ".local", "bin", "nssf-statement-dispatch"))
+			_ = os.Remove(filepath.Join(home, ".local", "share", "applications", "nssf-dispatch.desktop"))
+			_ = os.Remove(filepath.Join(home, ".local", "share", "icons", "hicolor", "512x512", "apps", "nssf-dispatch.png"))
+			_ = os.Remove(filepath.Join(home, "Desktop", "nssf-dispatch.desktop"))
+			if upd, err := exec.LookPath("update-desktop-database"); err == nil {
+				_ = exec.Command(upd, filepath.Join(home, ".local", "share", "applications")).Run()
+			}
+		}
+		fmt.Println("Removed user desktop launcher and binary from ~/.local/")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return
+
+	removedDirs, rmErr := CleanupUserDataDirs()
+	for _, d := range removedDirs {
+		fmt.Printf("Removed stored application data directory: %s\n", d)
 	}
-	_ = os.Remove(filepath.Join(home, ".local", "bin", "nssf-statement-dispatch"))
-	_ = os.Remove(filepath.Join(home, ".local", "share", "applications", "nssf-dispatch.desktop"))
-	_ = os.Remove(filepath.Join(home, ".local", "share", "icons", "hicolor", "512x512", "apps", "nssf-dispatch.png"))
-	_ = os.Remove(filepath.Join(home, "Desktop", "nssf-dispatch.desktop"))
-	if upd, err := exec.LookPath("update-desktop-database"); err == nil {
-		_ = exec.Command(upd, filepath.Join(home, ".local", "share", "applications")).Run()
+	if rmErr != nil {
+		log.Printf("Warning: some application data files could not be removed: %v", rmErr)
 	}
-	fmt.Println("Removed user desktop launcher and binary from ~/.local/")
 }
 
 func openBrowser(url string) {
@@ -323,13 +327,15 @@ func main() {
 	resetAdmin := false
 	installApp := false
 	uninstallApp := false
+	cleanupData := false
 	flag.BoolVar(&showVersion, "version", false, "Print application version and publisher metadata")
 	flag.BoolVar(&showVersionShort, "v", false, "Print application version and publisher metadata")
 	flag.BoolVar(&openUI, "open", true, "Open the portal in the default web browser after startup")
 	flag.BoolVar(&noOpenUI, "no-open", false, "Do not automatically open the web browser on startup")
 	flag.BoolVar(&resetAdmin, "reset-admin", false, "Reset the local administrator credentials via terminal prompt")
 	flag.BoolVar(&installApp, "install", false, "Install desktop launcher, icon, and user binary (Linux/Ubuntu)")
-	flag.BoolVar(&uninstallApp, "uninstall", false, "Remove user desktop launcher and binary (Linux/Ubuntu)")
+	flag.BoolVar(&uninstallApp, "uninstall", false, "Remove user desktop launcher, binary, and stored user data")
+	flag.BoolVar(&cleanupData, "cleanup-data", false, "Remove stored database and config files from user data folders")
 	flag.Parse()
 
 	if showVersion || showVersionShort {
@@ -344,6 +350,10 @@ func main() {
 	}
 	if uninstallApp {
 		runSelfUninstall()
+		return
+	}
+	if cleanupData {
+		_, _ = CleanupUserDataDirs()
 		return
 	}
 
@@ -400,6 +410,34 @@ func main() {
 				"sqliteCliBackend": hasSQLiteCLI(),
 			},
 		})
+	})
+
+	mux.HandleFunc("/api/verify-statement-file", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !isInitialSetupDone() {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Initial administrator setup is required before using the Service Desk."})
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
+		if err := r.ParseMultipartForm(15 << 20); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid multipart upload"})
+			return
+		}
+		file, _, err := r.FormFile("statement")
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please upload a member statement PDF."})
+			return
+		}
+		defer file.Close()
+		rawPDF, _ := io.ReadAll(file)
+		if err := VerifyNSSFStatementFile(rawPDF); err != nil {
+			writeJSON(w, 422, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("/api/validate", func(w http.ResponseWriter, r *http.Request) {
@@ -488,8 +526,16 @@ func main() {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Email dispatch is disabled in System Settings."})
 			return
 		}
+		if (channel == "email" || channel == "both") && !cfg.EmailConfigured {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Email (SMTP) is not set up yet. Configure SMTP host, username, and password in System Settings first."})
+			return
+		}
 		if (channel == "whatsapp" || channel == "both") && !cfg.WhatsAppEnabled {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "WhatsApp dispatch is disabled in System Settings."})
+			return
+		}
+		if (channel == "whatsapp" || channel == "both") && !cfg.WhatsAppPaired {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "WhatsApp is not set up yet. Pair a WhatsApp device via QR code in System Settings first."})
 			return
 		}
 

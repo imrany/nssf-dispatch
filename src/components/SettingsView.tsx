@@ -241,10 +241,15 @@ export function SettingsView() {
           'All dispatch channels disabled',
           'Staff cannot send statements until Email or WhatsApp is enabled.'
         );
-      } else if (form.deliveryMode === 'live' && form.whatsappEnabled && !isPaired) {
+      } else if (form.whatsappEnabled && !isPaired) {
         toast.warning(
           'WhatsApp device not yet paired',
-          'Scan the WhatsApp QR code before sending live WhatsApp statements.'
+          'WhatsApp dispatch stays disabled on the Service Desk until a WhatsApp QR code is paired.'
+        );
+      } else if (form.emailEnabled && !data.settings.emailConfigured) {
+        toast.warning(
+          'SMTP credentials incomplete',
+          'Email dispatch stays disabled on the Service Desk until SMTP host, username, and password are saved.'
         );
       }
       setTimeout(() => setSaveNotice(''), 4000);
@@ -479,8 +484,13 @@ export function SettingsView() {
               <div>
                 <div className="text-sm font-semibold text-slate-900">Enable Email (SMTP)</div>
                 <div className="text-xs text-slate-500 mt-0.5">
-                  Allow staff to dispatch protected statements to member email addresses.
+                  Allow staff to dispatch protected statements via Email once SMTP credentials are configured.
                 </div>
+                {!settings.emailConfigured && (
+                  <div className="text-[11px] font-semibold text-amber-700 mt-1.5">
+                    Setup required: Save SMTP host, user &amp; password below
+                  </div>
+                )}
               </div>
             </label>
 
@@ -494,8 +504,13 @@ export function SettingsView() {
               <div>
                 <div className="text-sm font-semibold text-slate-900">Enable WhatsApp</div>
                 <div className="text-xs text-slate-500 mt-0.5">
-                  Allow staff to send encrypted PDF statements to member WhatsApp numbers.
+                  Allow staff to send encrypted statements via WhatsApp once a device QR code is paired.
                 </div>
+                {!isPaired && (
+                  <div className="text-[11px] font-semibold text-amber-700 mt-1.5">
+                    Setup required: Pair WhatsApp device via QR code below
+                  </div>
+                )}
               </div>
             </label>
 
@@ -535,12 +550,21 @@ export function SettingsView() {
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <section className="lg:col-span-7 bg-white border border-slate-200 rounded-lg p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Mail className="w-4 h-4 text-[#006837]" aria-hidden="true" />
-                <h2 className="font-display text-base font-semibold text-[#006837]">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <Mail className="w-4 h-4 text-[#006837] shrink-0" aria-hidden="true" />
+                <h2 className="font-display text-base font-semibold text-[#006837] truncate">
                   Official NSSF SMTP Settings
                 </h2>
+                <span
+                  className={`text-[11px] font-semibold px-2 py-0.5 rounded border shrink-0 ${
+                    settings.emailConfigured
+                      ? 'bg-emerald-50 text-[#1E6B34] border-emerald-200'
+                      : 'bg-amber-50 text-amber-800 border-amber-200'
+                  }`}
+                >
+                  {settings.emailConfigured ? 'SMTP Ready' : 'Password Needed'}
+                </span>
               </div>
               <button
                 type="button"
@@ -707,6 +731,10 @@ export function SettingsView() {
               />
             </div>
           </div>
+
+          <p className="text-xs text-slate-500 pt-1">
+            Installed desktop packages store SQLite databases and configuration privately in your OS hidden user application data folder and remove them automatically upon uninstallation.
+          </p>
         </section>
 
         <TemplatesSection

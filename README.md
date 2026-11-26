@@ -80,15 +80,17 @@ APP_VERSION=1.0.0 bash go/build.sh
 ```
 
 This builds `dist/`, embeds the React SPA into `go/cmd/server/dist/`, compiles platform icons and publisher metadata (`NSSF Digital Statement Dispatcher` by `National Social Security Fund (NSSF) Kenya`), and outputs release artifacts into `go/release/`:
-- **Windows (`amd64`)**: `NSSF-Statement-Dispatch-windows-amd64.exe` (embedded `.ico` icon & PE VersionInfo) + `.zip` (includes `Start-NSSF-Dispatch.bat`, `Install-Shortcut.ps1`, and `SETUP.txt`)
-- **macOS (`amd64` & `arm64`)**: `NSSF-Statement-Dispatch-macos-{amd64,arm64}.app.tar.gz` (`.app` bundle with `nssf.icns`, `Info.plist`, `install-macos.sh`, and `SETUP.txt`) + raw binaries
+- **Windows (`amd64`)**:
+  - `NSSF-Statement-Dispatch-windows-amd64.msi` (Windows Installer with app icon, Start Menu & Desktop shortcuts, and automatic `%AppData%\nssf-dispatch` cleanup on uninstall)
+  - `NSSF-Statement-Dispatch-windows-amd64.exe` (embedded `.ico` icon & PE VersionInfo) + `.zip` (includes `Start-NSSF-Dispatch.bat`, `Install-Shortcut.ps1`, `Uninstall-NSSF-Dispatch.ps1`, and `SETUP.txt`)
+- **macOS (`amd64` & `arm64`)**: `NSSF-Statement-Dispatch-macos-{amd64,arm64}.app.tar.gz` (`.app` bundle with `nssf.icns`, `Info.plist`, `install-macos.sh`, `uninstall-macos.sh`, and `SETUP.txt`) + raw binaries
 - **Linux / Ubuntu (`amd64` & `arm64`)**:
-  - `NSSF-Statement-Dispatch-linux-{amd64,arm64}.deb` (native Ubuntu/Debian installer registering `/usr/bin/nssf-statement-dispatch`, desktop entry, icons, and `systemd --user` service)
+  - `NSSF-Statement-Dispatch-linux-{amd64,arm64}.deb` (native Ubuntu/Debian installer registering `/usr/bin/nssf-statement-dispatch`, desktop entry, icons, `systemd --user` service, and clean user-data removal on `remove`/`purge`)
   - `NSSF-Statement-Dispatch-linux-{amd64,arm64}.tar.gz` (includes `install.sh`, `start.sh`, `uninstall.sh`, `nssf-dispatch.desktop`, `nssf-dispatch.png`, and `SETUP.txt`)
-  - Raw binaries `nssf-statement-dispatch-linux-{amd64,arm64}` (also support `--install`, `--uninstall`, `--reset-admin`, `--no-open`, and `--version`)
+  - Raw binaries `nssf-statement-dispatch-linux-{amd64,arm64}` (also support `--install`, `--uninstall`, `--cleanup-data`, `--reset-admin`, `--no-open`, and `--version`)
 - **Checksums**: `SHA256SUMS.txt`
 
-Running the standalone binary directly serves both the React SPA and all `/api/*` endpoints from a single executable (`PORT=8080` by default) and automatically opens `http://127.0.0.1:8080` in the default browser once started (pass `--no-open` or set `NSSF_NO_BROWSER=1` to run headless). On first launch, the portal displays **Setup Admin Account** until an administrator account and backup recovery key are created.
+Running the standalone binary directly serves both the React SPA and all `/api/*` endpoints from a single executable (`PORT=8080` by default), stores SQLite databases and settings inside hidden OS user folders (`~/.config/nssf-dispatch` on Linux, `%AppData%\nssf-dispatch` on Windows, `~/Library/Application Support/nssf-dispatch` on macOS) removed upon uninstallation, and automatically opens `http://127.0.0.1:8080` in the default browser once started (pass `--no-open` or set `NSSF_NO_BROWSER=1` to run headless). On first launch, the portal displays **Setup Admin Account** until an administrator account and backup recovery key are created; Email and WhatsApp dispatch remain disabled until configured/paired in Settings, and non-NSSF PDFs are rejected on upload.
 
 ### Automated GitHub Releases (Tag Trigger)
 
@@ -122,6 +124,7 @@ git push origin v1.0.0
 | `GET /api/whatsapp/status` | Admin | Poll WhatsApp pairing session status |
 | `POST /api/whatsapp/pair-confirm` | Admin | Confirm WhatsApp session pairing |
 | `POST /api/whatsapp/unlink` | Admin | Remove paired WhatsApp device |
+| `POST /api/verify-statement-file` | Public (post-setup) | Reject non-PDF or non-NSSF statement files immediately on upload |
 | `POST /api/validate` | Public (post-setup) | Validate uploaded PDF against NSSF Member No |
 | `POST /api/dispatch` | Public (post-setup) | Encrypt PDF & dispatch via Email / WhatsApp |
 | `GET /api/download/:token` | Public | Download freshly encrypted statement PDF |
