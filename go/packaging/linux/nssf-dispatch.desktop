@@ -3,9 +3,10 @@ Type=Application
 Name=NSSF Digital Statement Dispatcher
 GenericName=Member Statement Dispatch Portal
 Comment=Validate, password-protect, and securely dispatch NSSF member statements
-Exec=nssf-statement-dispatch --open
+Exec=nssf-statement-dispatch
 Icon=nssf-dispatch
 Terminal=false
 Categories=Office;Finance;
 StartupNotify=true
 X-Publisher=National Social Security Fund (NSSF) Kenya
+

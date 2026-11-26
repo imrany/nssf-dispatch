@@ -1,8 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from '../components/Toaster';
-import type { AppSettings, DispatchReceipt, PendingSettingsAction } from '../types';
-import { fetchSettingsApi, logoutAdminApi } from '../utils/api';
+import type { AdminAuthStatus, AppSettings, DispatchReceipt, PendingSettingsAction } from '../types';
+import { fetchAuthStatusApi, fetchSettingsApi, logoutAdminApi } from '../utils/api';
 import {
   APP_NAME,
   APP_OFFICE_LOCATION,
@@ -24,9 +24,26 @@ export interface AppContextValue {
   refreshSettings: (tokenOverride?: string | null) => Promise<void>;
   receipt: DispatchReceipt | null;
   setReceipt: React.Dispatch<React.SetStateAction<DispatchReceipt | null>>;
+  authStatus: AdminAuthStatus | null;
+  authStatusLoaded: boolean;
+  authStatusError: string;
+  refreshAuthStatus: () => Promise<AdminAuthStatus | null>;
   adminToken: string | null;
   adminUsername: string | null;
-  authenticateAdmin: (token: string, username: string, fullSettings: AppSettings) => void;
+  adminRecoveryEmail: string;
+  pendingRecoveryKey: string | null;
+  clearPendingRecoveryKey: (targetPath?: string) => void;
+  authenticateAdmin: (
+    token: string,
+    username: string,
+    fullSettings: AppSettings,
+    options?: { recoveryEmail?: string; recoveryKey?: string | null }
+  ) => void;
+  updateAdminCredentialsSession: (
+    token: string,
+    username: string,
+    recoveryEmail: string
+  ) => void;
   logoutAdmin: (reason?: 'manual' | 'expired') => void;
   settingsDirty: boolean;
   setSettingsDirty: React.Dispatch<React.SetStateAction<boolean>>;
@@ -51,8 +68,31 @@ export function AppProvider({
   const [receipt, setReceipt] = useState<DispatchReceipt | null>(null);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState<PendingSettingsAction | null>(null);
+
+  const [authStatus, setAuthStatus] = useState<AdminAuthStatus | null>(null);
+  const [authStatusLoaded, setAuthStatusLoaded] = useState(false);
+  const [authStatusError, setAuthStatusError] = useState('');
+
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [adminUsername, setAdminUsername] = useState<string | null>(null);
+  const [adminRecoveryEmail, setAdminRecoveryEmail] = useState('');
+  const [pendingRecoveryKey, setPendingRecoveryKey] = useState<string | null>(null);
+
+  const refreshAuthStatus = useCallback(async (): Promise<AdminAuthStatus | null> => {
+    setAuthStatusError('');
+    try {
+      const data = await fetchAuthStatusApi();
+      setAuthStatus(data);
+      setAuthStatusLoaded(true);
+      return data;
+    } catch (err) {
+      setAuthStatusError(
+        err instanceof Error ? err.message : 'Unable to reach NSSF authentication service.'
+      );
+      setAuthStatusLoaded(true);
+      return null;
+    }
+  }, []);
 
   const refreshSettings = useCallback(
     async (tokenOverride?: string | null) => {
@@ -70,21 +110,27 @@ export function AppProvider({
   );
 
   useEffect(() => {
+    void refreshAuthStatus();
+  }, [refreshAuthStatus]);
+
+  useEffect(() => {
     void refreshSettings(adminToken);
   }, [adminToken, refreshSettings]);
 
   // Keep browser tab title synchronized with context appName and active route
   useEffect(() => {
-    const routeSuffix =
-      location.pathname === ROUTES.SETTINGS
-        ? 'Settings'
-        : location.pathname === ROUTES.AUDIT
-          ? 'Audit Logs'
-          : receipt
-            ? 'Dispatch Confirmed'
-            : 'Service Desk';
+    let routeSuffix = 'Service Desk';
+    if (!authStatusLoaded || !authStatus?.adminExists || pendingRecoveryKey) {
+      routeSuffix = 'Initial Admin Setup';
+    } else if (location.pathname === ROUTES.SETTINGS) {
+      routeSuffix = 'Settings';
+    } else if (location.pathname === ROUTES.AUDIT) {
+      routeSuffix = 'Audit Logs';
+    } else if (receipt) {
+      routeSuffix = 'Dispatch Confirmed';
+    }
     document.title = `${appName} — ${routeSuffix}`;
-  }, [appName, location.pathname, receipt]);
+  }, [appName, authStatus?.adminExists, authStatusLoaded, location.pathname, pendingRecoveryKey, receipt]);
 
   const navigateTo = useCallback(
     (targetPath: string, options?: { bypassDirtyCheck?: boolean }) => {
@@ -111,10 +157,59 @@ export function AppProvider({
   );
 
   const authenticateAdmin = useCallback(
-    (token: string, username: string, fullSettings: AppSettings) => {
+    (
+      token: string,
+      username: string,
+      fullSettings: AppSettings,
+      options?: { recoveryEmail?: string; recoveryKey?: string | null }
+    ) => {
+      const recEmail = options?.recoveryEmail ?? '';
       setAdminToken(token);
       setAdminUsername(username);
+      setAdminRecoveryEmail(recEmail);
       setSettings(fullSettings);
+      setAuthStatus((prev) => ({
+        adminExists: true,
+        authenticated: true,
+        username,
+        envPasscodeConfigured: prev?.envPasscodeConfigured ?? false,
+        hasRecoveryEmail: Boolean(recEmail) || Boolean(prev?.hasRecoveryEmail),
+        hasRecoveryKey: Boolean(options?.recoveryKey) || Boolean(prev?.hasRecoveryKey),
+        smtpConfigured: prev?.smtpConfigured ?? false,
+        recoveryEmail: recEmail,
+      }));
+      if (options?.recoveryKey) {
+        setPendingRecoveryKey(options.recoveryKey);
+      }
+    },
+    []
+  );
+
+  const clearPendingRecoveryKey = useCallback(
+    (targetPath?: string) => {
+      setPendingRecoveryKey(null);
+      if (targetPath) {
+        navigate(targetPath);
+      }
+    },
+    [navigate]
+  );
+
+  const updateAdminCredentialsSession = useCallback(
+    (token: string, username: string, recoveryEmail: string) => {
+      setAdminToken(token);
+      setAdminUsername(username);
+      setAdminRecoveryEmail(recoveryEmail);
+      setAuthStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              username,
+              recoveryEmail,
+              hasRecoveryEmail: Boolean(recoveryEmail),
+            }
+          : prev
+      );
     },
     []
   );
@@ -124,8 +219,12 @@ export function AppProvider({
       const tokenToRevoke = adminToken;
       setAdminToken(null);
       setAdminUsername(null);
+      setAdminRecoveryEmail('');
       setSettingsDirty(false);
       setPendingNavigation(null);
+      setAuthStatus((prev) =>
+        prev ? { ...prev, authenticated: false, username: null, recoveryEmail: null } : prev
+      );
 
       if (tokenToRevoke) {
         logoutAdminApi(tokenToRevoke).catch(() => {});
@@ -152,9 +251,17 @@ export function AppProvider({
       refreshSettings,
       receipt,
       setReceipt,
+      authStatus,
+      authStatusLoaded,
+      authStatusError,
+      refreshAuthStatus,
       adminToken,
       adminUsername,
+      adminRecoveryEmail,
+      pendingRecoveryKey,
+      clearPendingRecoveryKey,
       authenticateAdmin,
+      updateAdminCredentialsSession,
       logoutAdmin,
       settingsDirty,
       setSettingsDirty,
@@ -167,9 +274,17 @@ export function AppProvider({
       settings,
       refreshSettings,
       receipt,
+      authStatus,
+      authStatusLoaded,
+      authStatusError,
+      refreshAuthStatus,
       adminToken,
       adminUsername,
+      adminRecoveryEmail,
+      pendingRecoveryKey,
+      clearPendingRecoveryKey,
       authenticateAdmin,
+      updateAdminCredentialsSession,
       logoutAdmin,
       settingsDirty,
       pendingNavigation,

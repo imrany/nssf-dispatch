@@ -90,46 +90,288 @@ if command -v zip >/dev/null 2>&1; then
   mkdir -p "$WIN_STAGE"
   cp "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.exe" "$WIN_STAGE/"
   cp "$GO_DIR/packaging/windows/nssf.ico" "$WIN_STAGE/"
+
+  cat > "$WIN_STAGE/Start-NSSF-Dispatch.bat" << 'EOF'
+@echo off
+cd /d "%~dp0"
+start "" "%~dp0NSSF-Statement-Dispatch-windows-amd64.exe"
+EOF
+
+  cat > "$WIN_STAGE/Install-Shortcut.ps1" << 'EOF'
+$ErrorActionPreference = "Stop"
+$dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$exe = Join-Path $dir "NSSF-Statement-Dispatch-windows-amd64.exe"
+$ico = Join-Path $dir "nssf.ico"
+$wsh = New-Object -ComObject WScript.Shell
+
+foreach ($targetDir in @(
+  [Environment]::GetFolderPath("Desktop"),
+  (Join-Path ([Environment]::GetFolderPath("StartMenu")) "Programs")
+)) {
+  if (Test-Path $targetDir) {
+    $lnk = $wsh.CreateShortcut((Join-Path $targetDir "NSSF Digital Statement Dispatcher.lnk"))
+    $lnk.TargetPath = $exe
+    $lnk.WorkingDirectory = $dir
+    $lnk.IconLocation = "$ico,0"
+    $lnk.Description = "NSSF Digital Statement Dispatcher"
+    $lnk.Save()
+  }
+}
+Write-Host "Desktop and Start Menu shortcuts created."
+EOF
+
+  cat > "$WIN_STAGE/SETUP.txt" << 'EOF'
+NSSF Digital Statement Dispatcher — Windows Setup
+==================================================
+1. Extract this ZIP folder to a permanent folder (e.g. C:\NSSF-Dispatch).
+2. Double-click "NSSF-Statement-Dispatch-windows-amd64.exe" (or "Start-NSSF-Dispatch.bat").
+   The portal automatically opens in your default browser at http://127.0.0.1:8080.
+3. Optional: Right-click "Install-Shortcut.ps1" -> "Run with PowerShell" to add Desktop & Start Menu icons.
+EOF
+
   (cd "$WIN_STAGE" && zip -q -r "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.zip" .)
 fi
 
-# --- Linux (amd64 & arm64) binaries + desktop bundles ---
+# --- Linux / Ubuntu (amd64 & arm64) binaries + .tar.gz bundles + .deb installers ---
 package_linux() {
   local arch="$1"
   local bin_name="nssf-statement-dispatch-linux-$arch"
   local bundle_name="NSSF-Statement-Dispatch-linux-$arch.tar.gz"
-  local stage="$RELEASE_DIR/.stage/linux-$arch"
+  local folder_name="NSSF-Statement-Dispatch-linux-$arch"
+  local stage="$RELEASE_DIR/.stage/linux-$arch/$folder_name"
 
   GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build \
     -ldflags="$COMMON_LDFLAGS" \
     -o "$RELEASE_DIR/$bin_name" \
     ./cmd/server
+  chmod 755 "$RELEASE_DIR/$bin_name"
 
   mkdir -p "$stage"
   cp "$RELEASE_DIR/$bin_name" "$stage/nssf-statement-dispatch"
-  chmod +x "$stage/nssf-statement-dispatch"
+  chmod 755 "$stage/nssf-statement-dispatch"
   cp "$GO_DIR/packaging/linux/nssf-dispatch.desktop" "$stage/"
   cp "$GO_DIR/packaging/linux/nssf-dispatch.png" "$stage/"
+
+  cat > "$stage/start.sh" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+chmod +x "$SCRIPT_DIR/nssf-statement-dispatch"
+exec "$SCRIPT_DIR/nssf-statement-dispatch" "$@"
+EOF
+  chmod 755 "$stage/start.sh"
 
   cat > "$stage/install.sh" << 'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${HOME}/.local/bin"
 APP_DIR="${HOME}/.local/share/applications"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/512x512/apps"
+SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
+TARGET_BIN="$BIN_DIR/nssf-statement-dispatch"
+TARGET_ICON="$ICON_DIR/nssf-dispatch.png"
+
+ENABLE_AUTOSTART=false
+LAUNCH_NOW=true
+for arg in "$@"; do
+  case "$arg" in
+    --autostart) ENABLE_AUTOSTART=true ;;
+    --no-launch) LAUNCH_NOW=false ;;
+  esac
+done
 
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
-install -m 755 "$SCRIPT_DIR/nssf-statement-dispatch" "$BIN_DIR/nssf-statement-dispatch"
-install -m 644 "$SCRIPT_DIR/nssf-dispatch.png" "$ICON_DIR/nssf-dispatch.png"
-install -m 644 "$SCRIPT_DIR/nssf-dispatch.desktop" "$APP_DIR/nssf-dispatch.desktop"
-sed -i "s|^Exec=.*|Exec=$BIN_DIR/nssf-statement-dispatch --open|" "$APP_DIR/nssf-dispatch.desktop" || true
+install -m 755 "$SCRIPT_DIR/nssf-statement-dispatch" "$TARGET_BIN"
+install -m 644 "$SCRIPT_DIR/nssf-dispatch.png" "$TARGET_ICON"
 
-command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APP_DIR" || true
-echo "Installed NSSF Digital Statement Dispatcher to $BIN_DIR/nssf-statement-dispatch"
+cat > "$APP_DIR/nssf-dispatch.desktop" << DESKTOP
+[Desktop Entry]
+Type=Application
+Name=NSSF Digital Statement Dispatcher
+GenericName=Member Statement Dispatch Portal
+Comment=Validate, password-protect, and securely dispatch NSSF member statements
+Exec=$TARGET_BIN
+Icon=$TARGET_ICON
+Terminal=false
+Categories=Office;Finance;
+StartupNotify=true
+X-Publisher=National Social Security Fund (NSSF) Kenya
+DESKTOP
+chmod 755 "$APP_DIR/nssf-dispatch.desktop"
+
+if [[ -d "${HOME}/Desktop" ]]; then
+  cp "$APP_DIR/nssf-dispatch.desktop" "${HOME}/Desktop/nssf-dispatch.desktop"
+  chmod 755 "${HOME}/Desktop/nssf-dispatch.desktop"
+  if command -v gio >/dev/null 2>&1; then
+    gio set "${HOME}/Desktop/nssf-dispatch.desktop" metadata::trusted true >/dev/null 2>&1 || true
+  fi
+fi
+
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+
+if [[ "$ENABLE_AUTOSTART" == "true" ]]; then
+  mkdir -p "$SYSTEMD_USER_DIR"
+  cat > "$SYSTEMD_USER_DIR/nssf-dispatch.service" << UNIT
+[Unit]
+Description=NSSF Digital Statement Dispatcher
+After=network.target
+
+[Service]
+ExecStart=$TARGET_BIN --no-open
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+UNIT
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    systemctl --user enable --now nssf-dispatch.service >/dev/null 2>&1 || true
+    echo "Enabled systemd user background service: nssf-dispatch.service"
+  fi
+fi
+
+echo "============================================================"
+echo " Installed NSSF Digital Statement Dispatcher"
+echo " Binary:   $TARGET_BIN"
+echo " Launcher: $APP_DIR/nssf-dispatch.desktop"
+echo " Icon:     $TARGET_ICON"
+echo "============================================================"
+
+if [[ "$LAUNCH_NOW" == "true" ]] && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  nohup "$TARGET_BIN" >/dev/null 2>&1 &
+  echo "Launched NSSF Digital Statement Dispatcher (opening browser)..."
+elif [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+  echo "Run directly with: $TARGET_BIN"
+fi
 EOF
-  chmod +x "$stage/install.sh"
-  tar -czf "$RELEASE_DIR/$bundle_name" -C "$stage" .
+  chmod 755 "$stage/install.sh"
+
+  cat > "$stage/uninstall.sh" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now nssf-dispatch.service >/dev/null 2>&1 || true
+fi
+rm -f "${HOME}/.config/systemd/user/nssf-dispatch.service"
+rm -f "${HOME}/.local/bin/nssf-statement-dispatch"
+rm -f "${HOME}/.local/share/applications/nssf-dispatch.desktop"
+rm -f "${HOME}/Desktop/nssf-dispatch.desktop"
+rm -f "${HOME}/.local/share/icons/hicolor/512x512/apps/nssf-dispatch.png"
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
+echo "Uninstalled NSSF Digital Statement Dispatcher."
+EOF
+  chmod 755 "$stage/uninstall.sh"
+
+  cat > "$stage/SETUP.txt" << 'EOF'
+NSSF Digital Statement Dispatcher — Linux / Ubuntu Setup
+=========================================================
+Option A (Install Desktop Icon & Menu Entry):
+  ./install.sh
+  (Optional background service on login: ./install.sh --autostart)
+
+Option B (Run Immediately Without Installing):
+  ./start.sh
+
+Option C (Using the Standalone Raw Binary):
+  chmod +x nssf-statement-dispatch-linux-amd64
+  ./nssf-statement-dispatch-linux-amd64 --install   # sets up Ubuntu launcher & icon
+  ./nssf-statement-dispatch-linux-amd64             # starts server & opens browser
+
+Administrator Recovery (Local Terminal):
+  nssf-statement-dispatch --reset-admin
+EOF
+
+  tar -czf "$RELEASE_DIR/$bundle_name" -C "$RELEASE_DIR/.stage/linux-$arch" "$folder_name"
+
+  # Build native Ubuntu/Debian .deb package when dpkg-deb is available
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    local deb_arch="$arch"
+    local deb_ver="${APP_VERSION_CLEAN//_/-}"
+    # Debian versions must start with a digit
+    if [[ ! "$deb_ver" =~ ^[0-9] ]]; then
+      deb_ver="1.0.0"
+    fi
+    local deb_root="$RELEASE_DIR/.stage/deb-$arch"
+    local deb_name="NSSF-Statement-Dispatch-linux-$arch.deb"
+
+    mkdir -p "$deb_root/DEBIAN" \
+      "$deb_root/usr/bin" \
+      "$deb_root/usr/share/applications" \
+      "$deb_root/usr/share/icons/hicolor/512x512/apps" \
+      "$deb_root/usr/share/pixmaps" \
+      "$deb_root/usr/lib/systemd/user"
+
+    install -m 755 "$RELEASE_DIR/$bin_name" "$deb_root/usr/bin/nssf-statement-dispatch"
+    install -m 644 "$GO_DIR/packaging/linux/nssf-dispatch.png" "$deb_root/usr/share/icons/hicolor/512x512/apps/nssf-dispatch.png"
+    install -m 644 "$GO_DIR/packaging/linux/nssf-dispatch.png" "$deb_root/usr/share/pixmaps/nssf-dispatch.png"
+
+    cat > "$deb_root/usr/share/applications/nssf-dispatch.desktop" << DESKTOP
+[Desktop Entry]
+Type=Application
+Name=NSSF Digital Statement Dispatcher
+GenericName=Member Statement Dispatch Portal
+Comment=Validate, password-protect, and securely dispatch NSSF member statements
+Exec=/usr/bin/nssf-statement-dispatch
+Icon=nssf-dispatch
+Terminal=false
+Categories=Office;Finance;
+StartupNotify=true
+X-Publisher=National Social Security Fund (NSSF) Kenya
+DESKTOP
+    chmod 644 "$deb_root/usr/share/applications/nssf-dispatch.desktop"
+
+    cat > "$deb_root/usr/lib/systemd/user/nssf-dispatch.service" << UNIT
+[Unit]
+Description=NSSF Digital Statement Dispatcher
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/nssf-statement-dispatch --no-open
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+UNIT
+    chmod 644 "$deb_root/usr/lib/systemd/user/nssf-dispatch.service"
+
+    cat > "$deb_root/DEBIAN/control" << CONTROL
+Package: nssf-statement-dispatch
+Version: ${deb_ver}
+Section: utils
+Priority: optional
+Architecture: ${deb_arch}
+Maintainer: ${APP_PUBLISHER}
+Description: ${APP_NAME}
+ Internal NSSF Service Desk portal for validating, password-protecting,
+ and dispatching member statements via Email (SMTP) and WhatsApp.
+CONTROL
+
+    cat > "$deb_root/DEBIAN/postinst" << 'POSTINST'
+#!/usr/bin/env bash
+set -e
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+exit 0
+POSTINST
+    chmod 755 "$deb_root/DEBIAN/postinst"
+
+    cat > "$deb_root/DEBIAN/prerm" << 'PRERM'
+#!/usr/bin/env bash
+set -e
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+exit 0
+PRERM
+    chmod 755 "$deb_root/DEBIAN/prerm"
+
+    dpkg-deb --root-owner-group --build "$deb_root" "$RELEASE_DIR/$deb_name" >/dev/null
+  else
+    echo "Warning: dpkg-deb not found; skipping .deb package creation for $arch."
+  fi
 }
 
 package_linux amd64
@@ -147,15 +389,40 @@ package_macos() {
     -ldflags="$COMMON_LDFLAGS" \
     -o "$RELEASE_DIR/$bin_name" \
     ./cmd/server
+  chmod 755 "$RELEASE_DIR/$bin_name"
 
   mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
   cp "$RELEASE_DIR/$bin_name" "$app_dir/Contents/MacOS/nssf-statement-dispatch-darwin"
-  chmod +x "$app_dir/Contents/MacOS/nssf-statement-dispatch-darwin"
+  chmod 755 "$app_dir/Contents/MacOS/nssf-statement-dispatch-darwin"
   cp "$GO_DIR/packaging/macos/nssf.icns" "$app_dir/Contents/Resources/nssf.icns"
   sed "s|<string>1\.0\.0</string>|<string>${APP_VERSION_CLEAN}</string>|g" \
     "$GO_DIR/packaging/macos/Info.plist" > "$app_dir/Contents/Info.plist"
 
-  tar -czf "$RELEASE_DIR/$bundle_tar" -C "$stage" "$APP_NAME.app"
+  cat > "$stage/install-macos.sh" << EOF
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+APP_SRC="\$SCRIPT_DIR/${APP_NAME}.app"
+TARGET_DIR="/Applications"
+if [[ ! -w "\$TARGET_DIR" ]]; then
+  TARGET_DIR="\${HOME}/Applications"
+  mkdir -p "\$TARGET_DIR"
+fi
+rm -rf "\$TARGET_DIR/${APP_NAME}.app"
+cp -R "\$APP_SRC" "\$TARGET_DIR/${APP_NAME}.app"
+xattr -dr com.apple.quarantine "\$TARGET_DIR/${APP_NAME}.app" >/dev/null 2>&1 || true
+open "\$TARGET_DIR/${APP_NAME}.app"
+EOF
+  chmod 755 "$stage/install-macos.sh"
+
+  cat > "$stage/SETUP.txt" << EOF
+NSSF Digital Statement Dispatcher — macOS Setup
+================================================
+1. Run ./install-macos.sh in Terminal (installs to Applications, clears Gatekeeper quarantine, and launches), OR
+2. Drag "${APP_NAME}.app" into /Applications, right-click -> Open on first launch.
+EOF
+
+  tar -czf "$RELEASE_DIR/$bundle_tar" -C "$stage" "$APP_NAME.app" "install-macos.sh" "SETUP.txt"
 }
 
 package_macos amd64

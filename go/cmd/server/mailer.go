@@ -263,6 +263,45 @@ func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, 
 	return client.Quit()
 }
 
+func SendPlainTextEmail(cfg AppSettings, recipient, subject, body string) error {
+	if strings.TrimSpace(cfg.SMTPHost) == "" {
+		return fmt.Errorf("SMTP host is not configured")
+	}
+	var buf bytes.Buffer
+	fromHeader := defaultStr(strings.TrimSpace(cfg.SMTPFrom), defaultStr(strings.TrimSpace(cfg.SMTPUser), "statements@nssfkenya.co.ke"))
+	fmt.Fprintf(&buf, "From: %s\r\n", fromHeader)
+	fmt.Fprintf(&buf, "To: %s\r\n", recipient)
+	fmt.Fprintf(&buf, "Subject: %s\r\n", strings.NewReplacer("\r", "", "\n", "").Replace(subject))
+	fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&buf, "MIME-Version: 1.0\r\n")
+	fmt.Fprintf(&buf, "Content-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n", body)
+
+	client, err := dialSMTPClient(cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	fromAddr := defaultStr(strings.TrimSpace(cfg.SMTPUser), "statements@nssfkenya.co.ke")
+	if err := client.Mail(fromAddr); err != nil {
+		return err
+	}
+	if err := client.Rcpt(recipient); err != nil {
+		return err
+	}
+	w, err := client.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return client.Quit()
+}
+
 func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

@@ -1,0 +1,36 @@
+{
+  "settings": {
+    "deliveryMode": "preview",
+    "emailEnabled": "true",
+    "emailSubjectTemplate": "Official NSSF Provisional Member Statement — {memberName} ({memberNo})",
+    "filenameTemplate": "NSSF_Statement_{memberNo}_{date}.pdf",
+    "passwordMode": "id_card",
+    "portalUrl": "https://nssfdigital.enssf.co.ke",
+    "previewBeforeDispatch": "true",
+    "smtpFrom": "NSSF Kenya Member Services \u003cstatements@nssfkenya.co.ke\u003e",
+    "smtpHost": "smtp.nssfkenya.co.ke",
+    "smtpPass": "",
+    "smtpPort": "587",
+    "smtpSecurity": "starttls",
+    "smtpUser": "statements@nssfkenya.co.ke",
+    "whatsappBridgeUrl": "http://127.0.0.1:8095",
+    "whatsappDeviceName": "NSSF Service Desk Terminal 01",
+    "whatsappEnabled": "true",
+    "whatsappMessageTemplate": "*NATIONAL SOCIAL SECURITY FUND (NSSF) KENYA*\nHello {memberName},\n\nPlease find attached your official NSSF Provisional Member Statement ({renamedFile}) for {period}.\n\n*Member No:* {memberNo}\n*Total Fund Balance:* KES {totalAmount}\n\n*How to Open:*\nEnter {passwordGuide} when prompted for the PDF password.\n\nSelf-Service: USSD *303# or {portalUrl}",
+    "whatsappPaired": "false"
+  },
+  "whatsapp": {
+    "sessionCode": "NSSF-WA-DB7EF51C084E",
+    "qrPayload": "",
+    "qrSvg": "",
+    "paired": false,
+    "deviceName": "NSSF Service Desk Terminal 01",
+    "bridgeUrl": "whatsmeow://native",
+    "bridgeReachable": false,
+    "pairedPhone": "",
+    "pairedAt": "",
+    "updatedAt": "2026-11-26 18:24:30"
+  },
+  "auditLogs": [],
+  "nextAuditId": 1
+}

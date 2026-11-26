@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -32,6 +34,9 @@ var (
 
 //go:embed dist/*
 var embeddedFrontend embed.FS
+
+//go:embed nssf-dispatch.png
+var embeddedIconPNG []byte
 
 type cachedPDF struct {
 	filename  string
@@ -85,37 +90,246 @@ var (
 	usernameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]{3,64}$`)
 )
 
-func isMacOSAppBundle() bool {
-	if runtime.GOOS != "darwin" {
-		return false
+func isInitialSetupDone() bool {
+	return strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" || HasAdminAccount()
+}
+
+func runSelfInstall() {
+	if runtime.GOOS != "linux" {
+		fmt.Printf("Desktop self-installer is designed for Linux/Ubuntu. On %s, run the executable or installer package directly.\n", runtime.GOOS)
+		return
 	}
-	exe, err := os.Executable()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		log.Fatalf("Cannot determine home directory: %v", err)
+	}
+	exePath, err := os.Executable()
 	if err != nil {
-		return false
+		log.Fatalf("Cannot locate running executable: %v", err)
 	}
-	return strings.Contains(exe, ".app/Contents/MacOS/")
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolved
+	}
+
+	binDir := filepath.Join(home, ".local", "bin")
+	appDir := filepath.Join(home, ".local", "share", "applications")
+	iconDir := filepath.Join(home, ".local", "share", "icons", "hicolor", "512x512", "apps")
+	for _, d := range []string{binDir, appDir, iconDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			log.Fatalf("Failed to create directory %s: %v", d, err)
+		}
+	}
+
+	targetBin := filepath.Join(binDir, "nssf-statement-dispatch")
+	if exePath != targetBin {
+		data, err := os.ReadFile(exePath)
+		if err != nil {
+			log.Fatalf("Failed to read binary %s: %v", exePath, err)
+		}
+		if err := os.WriteFile(targetBin, data, 0755); err != nil {
+			log.Fatalf("Failed to install binary to %s: %v", targetBin, err)
+		}
+	}
+	_ = os.Chmod(targetBin, 0755)
+
+	iconPath := filepath.Join(iconDir, "nssf-dispatch.png")
+	if len(embeddedIconPNG) > 0 {
+		if err := os.WriteFile(iconPath, embeddedIconPNG, 0644); err != nil {
+			log.Fatalf("Failed to write icon %s: %v", iconPath, err)
+		}
+	}
+
+	desktopContent := fmt.Sprintf(`[Desktop Entry]
+Type=Application
+Name=%s
+GenericName=Member Statement Dispatch Portal
+Comment=Validate, password-protect, and securely dispatch NSSF member statements
+Exec=%s
+Icon=%s
+Terminal=false
+Categories=Office;Finance;
+StartupNotify=true
+X-Publisher=%s
+`, appName, targetBin, iconPath, appPublisher)
+
+	desktopPath := filepath.Join(appDir, "nssf-dispatch.desktop")
+	if err := os.WriteFile(desktopPath, []byte(desktopContent), 0755); err != nil {
+		log.Fatalf("Failed to write desktop entry %s: %v", desktopPath, err)
+	}
+
+	// Also add a Desktop shortcut if ~/Desktop exists
+	userDesktop := filepath.Join(home, "Desktop")
+	if st, err := os.Stat(userDesktop); err == nil && st.IsDir() {
+		shortcutPath := filepath.Join(userDesktop, "nssf-dispatch.desktop")
+		_ = os.WriteFile(shortcutPath, []byte(desktopContent), 0755)
+		if gio, err := exec.LookPath("gio"); err == nil {
+			_ = exec.Command(gio, "set", shortcutPath, "metadata::trusted", "true").Run()
+		}
+	}
+
+	if upd, err := exec.LookPath("update-desktop-database"); err == nil {
+		_ = exec.Command(upd, appDir).Run()
+	}
+	if gtk, err := exec.LookPath("gtk-update-icon-cache"); err == nil {
+		_ = exec.Command(gtk, "-f", "-t", filepath.Join(home, ".local", "share", "icons", "hicolor")).Run()
+	}
+
+	fmt.Printf("Installed %s:\n", appName)
+	fmt.Printf("  Binary:   %s\n", targetBin)
+	fmt.Printf("  Launcher: %s\n", desktopPath)
+	fmt.Printf("  Icon:     %s\n", iconPath)
+	fmt.Printf("  Data Dir: %s\n", getAppDataDir())
+	fmt.Println("\nYou can now launch it from Ubuntu Applications or run: nssf-statement-dispatch")
+}
+
+func runSelfUninstall() {
+	if runtime.GOOS != "linux" {
+		fmt.Println("Desktop uninstaller applies to Linux/Ubuntu user installations.")
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(home, ".local", "bin", "nssf-statement-dispatch"))
+	_ = os.Remove(filepath.Join(home, ".local", "share", "applications", "nssf-dispatch.desktop"))
+	_ = os.Remove(filepath.Join(home, ".local", "share", "icons", "hicolor", "512x512", "apps", "nssf-dispatch.png"))
+	_ = os.Remove(filepath.Join(home, "Desktop", "nssf-dispatch.desktop"))
+	if upd, err := exec.LookPath("update-desktop-database"); err == nil {
+		_ = exec.Command(upd, filepath.Join(home, ".local", "share", "applications")).Run()
+	}
+	fmt.Println("Removed user desktop launcher and binary from ~/.local/")
 }
 
 func openBrowser(url string) {
-	var cmd *exec.Cmd
+	var candidates []*exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url)
+		candidates = append(candidates, exec.Command("open", url))
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		candidates = append(candidates, exec.Command("rundll32", "url.dll,FileProtocolHandler", url))
 	default:
-		cmd = exec.Command("xdg-open", url)
+		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+			return
+		}
+		for _, bin := range []string{"xdg-open", "gio", "sensible-browser", "google-chrome", "chromium", "firefox"} {
+			if p, err := exec.LookPath(bin); err == nil {
+				if bin == "gio" {
+					candidates = append(candidates, exec.Command(p, "open", url))
+				} else {
+					candidates = append(candidates, exec.Command(p, url))
+				}
+				break
+			}
+		}
 	}
-	_ = cmd.Start()
+	for _, cmd := range candidates {
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err == nil {
+			go func(c *exec.Cmd) { _ = c.Wait() }(cmd)
+			return
+		}
+	}
+}
+
+func waitForLocalServer(healthURL string, timeout time.Duration) bool {
+	client := &http.Client{Timeout: 400 * time.Millisecond}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(healthURL)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return true
+			}
+		}
+		time.Sleep(60 * time.Millisecond)
+	}
+	return false
+}
+
+func isOwnInstanceRunning(port string) bool {
+	client := &http.Client{Timeout: 600 * time.Millisecond}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/api/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var payload map[string]any
+	if json.NewDecoder(resp.Body).Decode(&payload) != nil {
+		return false
+	}
+	engine, _ := payload["engine"].(string)
+	return engine == "go"
+}
+
+func runCLIAdminReset() {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("=== %s — Local Administrator Recovery ===\n", appName)
+	fmt.Printf("Data directory: %s\n", getAppDataDir())
+
+	username := strings.TrimSpace(os.Getenv("NSSF_RESET_USER"))
+	if username == "" {
+		fmt.Print("New Administrator Username [admin]: ")
+		line, _ := reader.ReadString('\n')
+		username = strings.TrimSpace(line)
+		if username == "" {
+			username = "admin"
+		}
+	}
+	if !usernameRe.MatchString(username) {
+		log.Fatalf("Invalid username: must be 3 to 64 characters (letters, numbers, ., _, @, -).")
+	}
+
+	recoveryEmail := strings.TrimSpace(os.Getenv("NSSF_RESET_EMAIL"))
+	if recoveryEmail == "" && os.Getenv("NSSF_RESET_PASS") == "" {
+		fmt.Print("Recovery Email (optional, press Enter to skip): ")
+		line, _ := reader.ReadString('\n')
+		recoveryEmail = strings.TrimSpace(line)
+	}
+	if recoveryEmail != "" && !emailRe.MatchString(recoveryEmail) {
+		log.Fatalf("Invalid recovery email address.")
+	}
+
+	password := os.Getenv("NSSF_RESET_PASS")
+	if password == "" {
+		fmt.Print("New Administrator Password (min 8 chars): ")
+		line, _ := reader.ReadString('\n')
+		password = strings.TrimRight(line, "\r\n")
+	}
+	if len(password) < 8 || len(password) > 128 {
+		log.Fatalf("Invalid password: must be between 8 and 128 characters.")
+	}
+
+	acc, recKey, err := UpsertAdminFromCLI(username, password, recoveryEmail)
+	if err != nil {
+		log.Fatalf("Failed to update administrator account: %v", err)
+	}
+	RevokeAllAdminSessions()
+	fmt.Printf("\nAdministrator account updated for username: %s\n", acc.Username)
+	fmt.Printf("New Backup Recovery Key (save securely): %s\n", recKey)
 }
 
 func main() {
 	showVersion := false
 	showVersionShort := false
-	openUI := false
+	openUI := true
+	noOpenUI := false
+	resetAdmin := false
+	installApp := false
+	uninstallApp := false
 	flag.BoolVar(&showVersion, "version", false, "Print application version and publisher metadata")
 	flag.BoolVar(&showVersionShort, "v", false, "Print application version and publisher metadata")
-	flag.BoolVar(&openUI, "open", false, "Open the portal in the default web browser after startup")
+	flag.BoolVar(&openUI, "open", true, "Open the portal in the default web browser after startup")
+	flag.BoolVar(&noOpenUI, "no-open", false, "Do not automatically open the web browser on startup")
+	flag.BoolVar(&resetAdmin, "reset-admin", false, "Reset the local administrator credentials via terminal prompt")
+	flag.BoolVar(&installApp, "install", false, "Install desktop launcher, icon, and user binary (Linux/Ubuntu)")
+	flag.BoolVar(&uninstallApp, "uninstall", false, "Remove user desktop launcher and binary (Linux/Ubuntu)")
 	flag.Parse()
 
 	if showVersion || showVersionShort {
@@ -124,8 +338,22 @@ func main() {
 		return
 	}
 
+	if installApp {
+		runSelfInstall()
+		return
+	}
+	if uninstallApp {
+		runSelfUninstall()
+		return
+	}
+
 	if err := InitDB(); err != nil {
 		log.Fatalf("Database init failed: %v", err)
+	}
+
+	if resetAdmin {
+		runCLIAdminReset()
+		return
 	}
 
 	if startupCfg, err := GetRawSettings(); err == nil {
@@ -136,6 +364,8 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+
+	shouldAutoOpen := openUI && !noOpenUI && os.Getenv("NSSF_NO_BROWSER") != "1"
 
 	mux := http.NewServeMux()
 
@@ -177,6 +407,10 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !isInitialSetupDone() {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Initial administrator setup is required before using the Service Desk."})
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
 		if err := r.ParseMultipartForm(15 << 20); err != nil {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid multipart upload"})
@@ -207,6 +441,10 @@ func main() {
 	mux.HandleFunc("/api/dispatch", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !isInitialSetupDone() {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Initial administrator setup is required before using the Service Desk."})
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
@@ -357,17 +595,28 @@ func main() {
 	mux.HandleFunc("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
 		envPasscode := strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE"))
 		envConfigured := envPasscode != ""
-		adminExists := envConfigured || HasAdminAccount()
+		acc, _ := GetAdminAccount()
+		adminExists := envConfigured || acc != nil
 		valid, username := VerifyAdminSessionToken(ExtractBearerToken(r))
 		var userVal any = nil
+		var recoveryEmailVal any = nil
 		if valid && username != "" {
 			userVal = username
+			if acc != nil {
+				recoveryEmailVal = acc.RecoveryEmail
+			}
 		}
+		cfg, _ := GetRawSettings()
+		smtpConfigured := strings.TrimSpace(cfg.SMTPHost) != "" && strings.TrimSpace(cfg.SMTPUser) != "" && strings.TrimSpace(cfg.SMTPPass) != ""
 		writeJSON(w, 200, map[string]any{
 			"adminExists":           adminExists,
 			"authenticated":         valid,
 			"username":              userVal,
 			"envPasscodeConfigured": envConfigured,
+			"hasRecoveryEmail":      acc != nil && strings.TrimSpace(acc.RecoveryEmail) != "",
+			"hasRecoveryKey":        acc != nil && strings.TrimSpace(acc.RecoveryHash) != "",
+			"smtpConfigured":        smtpConfigured,
+			"recoveryEmail":         recoveryEmailVal,
 		})
 	})
 
@@ -381,8 +630,9 @@ func main() {
 			return
 		}
 		var body struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
+			Username      string `json:"username"`
+			Password      string `json:"password"`
+			RecoveryEmail string `json:"recoveryEmail"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
@@ -393,11 +643,16 @@ func main() {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
 			return
 		}
+		recoveryEmail := strings.TrimSpace(body.RecoveryEmail)
+		if recoveryEmail != "" && !emailRe.MatchString(recoveryEmail) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid recovery email address."})
+			return
+		}
 		if len(body.Password) < 8 || len(body.Password) > 128 {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin password must be between 8 and 128 characters."})
 			return
 		}
-		created, err := CreateInitialAdmin(username, body.Password)
+		created, recoveryKey, err := CreateInitialAdmin(username, body.Password, recoveryEmail)
 		if err != nil {
 			writeJSON(w, 409, map[string]any{"ok": false, "error": "Administrator setup already completed. Please sign in."})
 			return
@@ -405,10 +660,12 @@ func main() {
 		token := CreateAdminSessionToken(created.Username)
 		pub, _ := GetPublicSettings()
 		writeJSON(w, 201, map[string]any{
-			"ok":       true,
-			"token":    token,
-			"username": created.Username,
-			"settings": pub,
+			"ok":            true,
+			"token":         token,
+			"username":      created.Username,
+			"recoveryEmail": created.RecoveryEmail,
+			"recoveryKey":   recoveryKey,
+			"settings":      pub,
 		})
 	})
 
@@ -461,8 +718,254 @@ func main() {
 		ClearFailedLogins(ip)
 		token := CreateAdminSessionToken(matchedUser)
 		pub, _ := GetPublicSettings()
-		writeJSON(w, 200, map[string]any{"ok": true, "token": token, "username": matchedUser, "settings": pub})
+		acc, _ := GetAdminAccount()
+		recEmail := ""
+		if acc != nil {
+			recEmail = acc.RecoveryEmail
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok":            true,
+			"token":         token,
+			"username":      matchedUser,
+			"recoveryEmail": recEmail,
+			"settings":      pub,
+		})
 	})
+
+	mux.HandleFunc("/api/auth/forgot-password", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Server passcode is managed via NSSF_ADMIN_PASSCODE environment variable."})
+			return
+		}
+		ip := ClientIP(r)
+		allowed, retryAfter := CheckLoginRateLimit(ip)
+		if !allowed {
+			writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Too many recovery requests. Try again in %d seconds.", retryAfter)})
+			return
+		}
+		var body struct {
+			Username      string `json:"username"`
+			RecoveryEmail string `json:"recoveryEmail"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
+			return
+		}
+		username := strings.TrimSpace(body.Username)
+		recoveryEmail := strings.TrimSpace(body.RecoveryEmail)
+		if username == "" || !emailRe.MatchString(recoveryEmail) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter both your administrator username and recovery email address."})
+			return
+		}
+
+		acc, _ := GetAdminAccount()
+		cfg, _ := GetRawSettings()
+		genericMsg := "If the administrator username and recovery email match our records and SMTP is configured, a password reset code has been sent."
+
+		if acc != nil &&
+			strings.EqualFold(acc.Username, username) &&
+			acc.RecoveryEmail != "" &&
+			strings.EqualFold(acc.RecoveryEmail, recoveryEmail) &&
+			strings.TrimSpace(cfg.SMTPHost) != "" &&
+			strings.TrimSpace(cfg.SMTPUser) != "" {
+			code, cooldownSec, ok := CreatePasswordResetCode()
+			if !ok {
+				writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Please wait %d seconds before requesting another reset code.", cooldownSec)})
+				return
+			}
+			subject := fmt.Sprintf("%s — Administrator Password Reset Code", appName)
+			emailBody := fmt.Sprintf(
+				"NSSF Digital Statement Dispatch — Administrator Password Reset\n\n"+
+					"A password reset was requested for administrator account: %s\n\n"+
+					"Verification Code: %s\n"+
+					"This code expires in 15 minutes and can only be used once.\n\n"+
+					"If you did not request this reset, ignore this message and review local workstation access.",
+				acc.Username, code,
+			)
+			if err := SendPlainTextEmail(cfg, acc.RecoveryEmail, subject, emailBody); err != nil {
+				log.Printf("[AUTH] Failed to send admin reset email: %v", err)
+				writeJSON(w, 502, map[string]any{"ok": false, "error": "Failed to deliver verification code via SMTP. Use your Backup Recovery Key instead."})
+				return
+			}
+		}
+
+		writeJSON(w, 200, map[string]any{"ok": true, "message": genericMsg})
+	})
+
+	mux.HandleFunc("/api/auth/reset-password", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Server passcode is managed via NSSF_ADMIN_PASSCODE environment variable."})
+			return
+		}
+		ip := ClientIP(r)
+		allowed, retryAfter := CheckLoginRateLimit(ip)
+		if !allowed {
+			writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Too many failed attempts. Try again in %d seconds.", retryAfter)})
+			return
+		}
+		var body struct {
+			Method      string `json:"method"`
+			Username    string `json:"username"`
+			Code        string `json:"code"`
+			RecoveryKey string `json:"recoveryKey"`
+			NewPassword string `json:"newPassword"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
+			return
+		}
+		username := strings.TrimSpace(body.Username)
+		if !usernameRe.MatchString(username) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid administrator username."})
+			return
+		}
+		if len(body.NewPassword) < 8 || len(body.NewPassword) > 128 {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
+			return
+		}
+		acc, _ := GetAdminAccount()
+		if acc == nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "No administrator account exists yet."})
+			return
+		}
+
+		method := strings.TrimSpace(body.Method)
+		if method == "email_code" {
+			if !strings.EqualFold(acc.Username, username) {
+				RecordFailedLogin(ip)
+				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid username or verification code."})
+				return
+			}
+			ok, msg := VerifyAndConsumePasswordResetCode(body.Code)
+			if !ok {
+				RecordFailedLogin(ip)
+				writeJSON(w, 401, map[string]any{"ok": false, "error": msg})
+				return
+			}
+		} else if method == "recovery_key" {
+			if !VerifyAdminRecoveryKey(username, body.RecoveryKey) {
+				RecordFailedLogin(ip)
+				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid administrator username or backup recovery key."})
+				return
+			}
+		} else {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid password reset method."})
+			return
+		}
+
+		if err := UpdateAdminPassword(body.NewPassword); err != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to update administrator password."})
+			return
+		}
+		ClearFailedLogins(ip)
+		RevokeAllAdminSessions()
+		writeJSON(w, 200, map[string]any{
+			"ok":      true,
+			"message": "Administrator password updated. Sign in with your new password.",
+		})
+	})
+
+	mux.HandleFunc("/api/auth/change-credentials", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, currentUser string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			writeJSON(w, 409, map[string]any{"ok": false, "error": "Credentials are controlled by the NSSF_ADMIN_PASSCODE environment variable."})
+			return
+		}
+		var body struct {
+			CurrentPassword string `json:"currentPassword"`
+			NewUsername     string `json:"newUsername"`
+			RecoveryEmail   string `json:"recoveryEmail"`
+			NewPassword     string `json:"newPassword"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
+			return
+		}
+		acc, _ := GetAdminAccount()
+		if acc == nil {
+			writeJSON(w, 404, map[string]any{"ok": false, "error": "Administrator account not found."})
+			return
+		}
+		if body.CurrentPassword == "" || !VerifyPasswordHash(body.CurrentPassword, acc.PasswordHash, acc.PasswordSalt) {
+			writeJSON(w, 401, map[string]any{"ok": false, "error": "Current password is incorrect."})
+			return
+		}
+		newUser := strings.TrimSpace(body.NewUsername)
+		if newUser == "" {
+			newUser = acc.Username
+		}
+		if !usernameRe.MatchString(newUser) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
+			return
+		}
+		recEmail := strings.TrimSpace(body.RecoveryEmail)
+		if recEmail != "" && !emailRe.MatchString(recEmail) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid recovery email address."})
+			return
+		}
+		if body.NewPassword != "" && (len(body.NewPassword) < 8 || len(body.NewPassword) > 128) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
+			return
+		}
+
+		updated, err := UpdateAdminCredentials(newUser, recEmail, body.NewPassword)
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to update administrator credentials."})
+			return
+		}
+		RevokeAllAdminSessions()
+		newToken := CreateAdminSessionToken(updated.Username)
+		writeJSON(w, 200, map[string]any{
+			"ok":            true,
+			"token":         newToken,
+			"username":      updated.Username,
+			"recoveryEmail": updated.RecoveryEmail,
+			"message":       "Administrator credentials updated successfully.",
+		})
+	}))
+
+	mux.HandleFunc("/api/auth/regenerate-recovery-key", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			writeJSON(w, 409, map[string]any{"ok": false, "error": "Recovery key is unavailable while NSSF_ADMIN_PASSCODE is active."})
+			return
+		}
+		var body struct {
+			CurrentPassword string `json:"currentPassword"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
+			return
+		}
+		acc, _ := GetAdminAccount()
+		if acc == nil || body.CurrentPassword == "" || !VerifyPasswordHash(body.CurrentPassword, acc.PasswordHash, acc.PasswordSalt) {
+			writeJSON(w, 401, map[string]any{"ok": false, "error": "Current password is incorrect."})
+			return
+		}
+		recKey, err := RegenerateAdminRecoveryKey()
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to regenerate backup recovery key."})
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok":          true,
+			"recoveryKey": recKey,
+		})
+	}))
 
 	mux.HandleFunc("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		RevokeAdminSessionToken(ExtractBearerToken(r))
@@ -649,14 +1152,23 @@ func main() {
 
 	ln, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
+		if isOwnInstanceRunning(port) {
+			targetURL := "http://127.0.0.1:" + port
+			log.Printf("%s is already running on %s — opening browser.", appName, targetURL)
+			if shouldAutoOpen {
+				openBrowser(targetURL)
+			}
+			return
+		}
 		log.Fatalf("Failed to bind port %s: %v", port, err)
 	}
 
-	log.Printf("%s v%s (%s) listening on http://127.0.0.1:%s", appName, appVersion, appPublisher, port)
-	if (openUI || os.Getenv("NSSF_OPEN_BROWSER") == "1" || isMacOSAppBundle()) && os.Getenv("NSSF_NO_BROWSER") != "1" {
+	targetURL := "http://127.0.0.1:" + port
+	log.Printf("%s v%s (%s) listening on %s (data: %s)", appName, appVersion, appPublisher, targetURL, getAppDataDir())
+	if shouldAutoOpen {
 		go func() {
-			time.Sleep(350 * time.Millisecond)
-			openBrowser("http://127.0.0.1:" + port)
+			waitForLocalServer(targetURL+"/api/health", 2*time.Second)
+			openBrowser(targetURL)
 		}()
 	}
 

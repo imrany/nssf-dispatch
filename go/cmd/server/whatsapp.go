@@ -64,7 +64,7 @@ func getWhatsAppDBPath() string {
 	if p := strings.TrimSpace(os.Getenv("NSSF_WA_DB_PATH")); p != "" {
 		return p
 	}
-	dir := filepath.Dir(getDBPath())
+	dir := getAppDataDir()
 	if dir == "" || dir == "." {
 		return "nssf_whatsapp.db"
 	}

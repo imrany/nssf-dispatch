@@ -91,23 +91,97 @@ export function fetchAuthStatusApi(): Promise<AdminAuthStatus> {
 
 export function setupAdminApi(
   username: string,
-  password: string
-): Promise<{ ok: boolean; token: string; username: string; settings: AppSettings }> {
+  password: string,
+  recoveryEmail = ''
+): Promise<{
+  ok: boolean;
+  token: string;
+  username: string;
+  recoveryEmail?: string;
+  recoveryKey?: string;
+  settings: AppSettings;
+}> {
   return requestJson('/api/auth/setup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, recoveryEmail }),
   });
 }
 
 export function loginAdminApi(
   username: string,
   password: string
-): Promise<{ ok: boolean; token: string; username: string; settings: AppSettings }> {
+): Promise<{
+  ok: boolean;
+  token: string;
+  username: string;
+  recoveryEmail?: string;
+  settings: AppSettings;
+}> {
   return requestJson('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
+  });
+}
+
+export function forgotPasswordApi(
+  username: string,
+  recoveryEmail: string
+): Promise<{ ok: boolean; message: string }> {
+  return requestJson('/api/auth/forgot-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, recoveryEmail }),
+  });
+}
+
+export function resetPasswordApi(params: {
+  method: 'email_code' | 'recovery_key';
+  username: string;
+  code?: string;
+  recoveryKey?: string;
+  newPassword: string;
+}): Promise<{ ok: boolean; message: string }> {
+  return requestJson('/api/auth/reset-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+}
+
+export function changeAdminCredentialsApi(
+  token: string,
+  params: {
+    currentPassword: string;
+    newUsername: string;
+    recoveryEmail: string;
+    newPassword?: string;
+  }
+): Promise<{
+  ok: boolean;
+  token: string;
+  username: string;
+  recoveryEmail: string;
+  message: string;
+}> {
+  return requestJson('/api/auth/change-credentials', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+}
+
+export function regenerateRecoveryKeyApi(
+  token: string,
+  currentPassword: string
+): Promise<{ ok: boolean; recoveryKey: string }> {
+  return requestJson('/api/auth/regenerate-recovery-key', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ currentPassword }),
   });
 }
 

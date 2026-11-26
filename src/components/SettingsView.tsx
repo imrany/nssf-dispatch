@@ -23,6 +23,7 @@ import {
 } from '../utils/api';
 import { ROUTES } from '../utils/constants';
 import { toast } from './Toaster';
+import { AdminCredentialsSection } from './settings/AdminCredentialsSection';
 import { TemplatesSection } from './settings/TemplatesSection';
 import { UnsavedChangesModal } from './settings/UnsavedChangesModal';
 import { WhatsAppGatewayCard } from './settings/WhatsAppGatewayCard';
@@ -754,6 +755,8 @@ export function SettingsView() {
           </button>
         </div>
       </form>
+
+      <AdminCredentialsSection />
 
       <UnsavedChangesModal
         pendingAction={activePendingAction}

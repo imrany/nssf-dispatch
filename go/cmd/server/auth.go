@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +21,9 @@ const (
 	sessionTTL        = 8 * time.Hour
 	maxLoginAttempts  = 10
 	loginWindow       = 15 * time.Minute
+	resetCodeTTL      = 15 * time.Minute
+	resetMaxAttempts  = 5
+	resetCooldown     = 45 * time.Second
 	pbkdf2Iterations  = 100000
 	pbkdf2KeyLen      = 32
 )
@@ -43,10 +47,19 @@ type loginAttemptRecord struct {
 	resetAt time.Time
 }
 
+type passwordResetChallenge struct {
+	codeHash  string
+	codeSalt  string
+	expiresAt time.Time
+	attempts  int
+	sentAt    time.Time
+}
+
 var (
 	authMu         sync.Mutex
 	activeSessions = map[string]sessionEntry{}
 	loginAttempts  = map[string]loginAttemptRecord{}
+	activeReset    *passwordResetChallenge
 )
 
 // Pure Go stdlib PBKDF2-HMAC-SHA256 (RFC 2898 / 8018) with zero external packages.
@@ -199,6 +212,92 @@ func RevokeAdminSessionToken(token string) {
 		delete(activeSessions, parsed.Jti)
 		authMu.Unlock()
 	}
+}
+
+func RevokeAllAdminSessions() {
+	authMu.Lock()
+	defer authMu.Unlock()
+	activeSessions = map[string]sessionEntry{}
+}
+
+const recoveryAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+func randomCodeString(length int) string {
+	buf := make([]byte, length)
+	_, _ = rand.Read(buf)
+	out := make([]byte, length)
+	for i := 0; i < length; i++ {
+		out[i] = recoveryAlphabet[int(buf[i])%len(recoveryAlphabet)]
+	}
+	return string(out)
+}
+
+func GenerateRecoveryKey() string {
+	raw := randomCodeString(16)
+	return fmt.Sprintf("NSSF-%s-%s-%s-%s", raw[0:4], raw[4:8], raw[8:12], raw[12:16])
+}
+
+func NormalizeRecoveryKey(raw string) string {
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	s = strings.ReplaceAll(s, "-", "")
+	s = strings.ReplaceAll(s, " ", "")
+	return s
+}
+
+func CreatePasswordResetCode() (string, int, bool) {
+	authMu.Lock()
+	defer authMu.Unlock()
+	now := time.Now()
+	if activeReset != nil && activeReset.sentAt.Add(resetCooldown).After(now) {
+		rem := int(activeReset.sentAt.Add(resetCooldown).Sub(now).Seconds())
+		if rem < 1 {
+			rem = 1
+		}
+		return "", rem, false
+	}
+	code := randomCodeString(8)
+	formatted := code[0:4] + "-" + code[4:8]
+	h, s := HashPasswordWithSalt(code)
+	activeReset = &passwordResetChallenge{
+		codeHash:  h,
+		codeSalt:  s,
+		expiresAt: now.Add(resetCodeTTL),
+		attempts:  0,
+		sentAt:    now,
+	}
+	return formatted, 0, true
+}
+
+func VerifyAndConsumePasswordResetCode(input string) (bool, string) {
+	norm := strings.ToUpper(strings.TrimSpace(input))
+	norm = strings.ReplaceAll(norm, "-", "")
+	norm = strings.ReplaceAll(norm, " ", "")
+	if len(norm) < 6 {
+		return false, "Invalid or expired verification code."
+	}
+
+	authMu.Lock()
+	defer authMu.Unlock()
+	if activeReset == nil || time.Now().After(activeReset.expiresAt) {
+		activeReset = nil
+		return false, "Verification code has expired. Please request a new code."
+	}
+	if activeReset.attempts >= resetMaxAttempts {
+		activeReset = nil
+		return false, "Too many invalid verification attempts. Please request a new code."
+	}
+
+	if !VerifyPasswordHash(norm, activeReset.codeHash, activeReset.codeSalt) {
+		activeReset.attempts++
+		if activeReset.attempts >= resetMaxAttempts {
+			activeReset = nil
+			return false, "Too many invalid verification attempts. Please request a new code."
+		}
+		return false, "Invalid verification code."
+	}
+
+	activeReset = nil
+	return true, ""
 }
 
 func ExtractBearerToken(r *http.Request) string {

@@ -118,4 +118,8 @@ export interface AdminAuthStatus {
   authenticated: boolean;
   username: string | null;
   envPasscodeConfigured: boolean;
+  hasRecoveryEmail?: boolean;
+  hasRecoveryKey?: boolean;
+  smtpConfigured?: boolean;
+  recoveryEmail?: string | null;
 }
