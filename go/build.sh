@@ -234,7 +234,7 @@ if command -v wixl >/dev/null 2>&1; then
                   Target="[INSTALLDIR]NSSF-Statement-Dispatch-windows-amd64.exe"
                   WorkingDirectory="INSTALLDIR"
                   Icon="AppIcon.ico" />
-        <RemoveFolder Id="RemoveStartMenuFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
         <RegistryValue Root="HKCU"
                        Key="Software\NSSF\DigitalStatementDispatcher"
                        Name="StartMenuShortcut"
@@ -275,7 +275,7 @@ if command -v wixl >/dev/null 2>&1; then
                   Return="ignore" />
 
     <InstallExecuteSequence>
-      <Custom Action="CleanupDataOnUninstall" Before="RemoveFiles"><![CDATA[REMOVE="ALL"]]></Custom>
+      <Custom Action="CleanupDataOnUninstall" Before="RemoveFiles">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
   </Product>
 </Wix>
