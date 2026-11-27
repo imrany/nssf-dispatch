@@ -1,6 +1,7 @@
 import { ArrowUpCircle, CheckCircle2, ExternalLink, RefreshCw } from 'lucide-react';
 import type { SystemRuntimeInfo, SystemUpdateStatus } from '../../types';
 import { AlertBanner } from '../ui';
+import { SectionSaveBar } from './SectionSaveBar';
 
 interface SystemUpdatesSectionProps {
   autoUpdateEnabled: boolean;
@@ -11,10 +12,13 @@ interface SystemUpdatesSectionProps {
   checkingUpdate: boolean;
   applyingUpdate: boolean;
   restartingApp: boolean;
+  dirty: boolean;
+  saving: boolean;
   onToggleAutoUpdate: (enabled: boolean) => void;
   onChangeUpdateRepo: (repo: string) => void;
   onCheckNow: () => void;
   onApplyUpdate: () => void;
+  onDiscard: () => void;
 }
 
 function getSafeReleaseUrl(raw?: string): string | null {
@@ -39,10 +43,13 @@ export function SystemUpdatesSection({
   checkingUpdate,
   applyingUpdate,
   restartingApp,
+  dirty,
+  saving,
   onToggleAutoUpdate,
   onChangeUpdateRepo,
   onCheckNow,
   onApplyUpdate,
+  onDiscard,
 }: SystemUpdatesSectionProps) {
   const currentVersion =
     updateStatus?.currentVersion || runtimeInfo?.goEngineInfo?.version || runtimeInfo?.version || '1.0.0';
@@ -173,7 +180,7 @@ export function SystemUpdatesSection({
           />
           <p className="text-[11px] text-slate-500 mt-1">
             {repoUnsaved
-              ? 'Save System Configuration to apply the new repository before checking.'
+              ? 'Save changes below to apply the new repository before checking.'
               : 'Auto-populated from GitHub Actions builds. Requires SHA256SUMS.txt in each release.'}
           </p>
         </div>
@@ -236,6 +243,8 @@ export function SystemUpdatesSection({
           )}
         </>
       )}
+
+      <SectionSaveBar dirty={dirty} saving={saving} onDiscard={onDiscard} />
     </section>
   );
 }

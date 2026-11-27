@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"mime/multipart"
+	"net"
 	"net/smtp"
 	"net/textproto"
 	"strings"
@@ -185,20 +186,32 @@ Social Security House, Bishops Road, P.O. Box 30599 - 00100 Nairobi`,
 }
 
 func dialSMTPClient(cfg AppSettings) (*smtp.Client, error) {
-	addr := fmt.Sprintf("%s:%s", cfg.SMTPHost, cfg.SMTPPort)
+	host := strings.TrimSpace(cfg.SMTPHost)
+	port := strings.TrimSpace(cfg.SMTPPort)
+	if host == "" || port == "" {
+		return nil, fmt.Errorf("SMTP host and port must be configured in System Settings")
+	}
+	addr := net.JoinHostPort(host, port)
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	var client *smtp.Client
 	var err error
-	if cfg.SMTPSecurity == "tls" || cfg.SMTPPort == "465" {
-		conn, dialErr := tls.Dial("tcp", addr, &tls.Config{ServerName: cfg.SMTPHost})
+	if cfg.SMTPSecurity == "tls" || port == "465" {
+		conn, dialErr := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host})
 		if dialErr != nil {
 			return nil, dialErr
 		}
-		client, err = smtp.NewClient(conn, cfg.SMTPHost)
+		_ = conn.SetDeadline(time.Now().Add(45 * time.Second))
+		client, err = smtp.NewClient(conn, host)
 	} else {
-		client, err = smtp.Dial(addr)
+		conn, dialErr := dialer.Dial("tcp", addr)
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		_ = conn.SetDeadline(time.Now().Add(45 * time.Second))
+		client, err = smtp.NewClient(conn, host)
 		if err == nil && cfg.SMTPSecurity == "starttls" {
 			if ok, _ := client.Extension("STARTTLS"); ok {
-				if tlsErr := client.StartTLS(&tls.Config{ServerName: cfg.SMTPHost}); tlsErr != nil {
+				if tlsErr := client.StartTLS(&tls.Config{ServerName: host}); tlsErr != nil {
 					client.Close()
 					return nil, tlsErr
 				}
@@ -208,8 +221,8 @@ func dialSMTPClient(cfg AppSettings) (*smtp.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.SMTPUser != "" {
-		auth := smtp.PlainAuth("", cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPHost)
+	if strings.TrimSpace(cfg.SMTPUser) != "" {
+		auth := smtp.PlainAuth("", strings.TrimSpace(cfg.SMTPUser), cfg.SMTPPass, host)
 		if err := client.Auth(auth); err != nil {
 			client.Close()
 			return nil, err
@@ -241,6 +254,13 @@ func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, 
 	if !cfg.EmailEnabled {
 		return fmt.Errorf("email dispatch is currently disabled in system settings")
 	}
+	recipient = strings.TrimSpace(recipient)
+	if recipient == "" {
+		return fmt.Errorf("recipient email address is required")
+	}
+	if strings.TrimSpace(cfg.SMTPHost) == "" {
+		return fmt.Errorf("SMTP host is not configured in system settings")
+	}
 
 	subject, htmlBody, plainText, _, passwordGuide := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
 
@@ -265,7 +285,8 @@ func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, 
 	altBoundary := "NSSF_ALT_" + randomHex(8)
 	relBoundary := "NSSF_REL_" + randomHex(8)
 
-	fmt.Fprintf(&buf, "From: %s\r\n", cfg.SMTPFrom)
+	fromHeader := defaultStr(strings.TrimSpace(cfg.SMTPFrom), defaultStr(strings.TrimSpace(cfg.SMTPUser), "statements@nssfkenya.co.ke"))
+	fmt.Fprintf(&buf, "From: %s\r\n", fromHeader)
 	fmt.Fprintf(&buf, "To: %s\r\n", recipient)
 	fmt.Fprintf(&buf, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))

@@ -4,7 +4,6 @@ import {
   Lock,
   Mail,
   RefreshCw,
-  Save,
   Server,
   ShieldCheck,
 } from 'lucide-react';
@@ -33,6 +32,7 @@ import {
 } from '../utils/api';
 import { ROUTES } from '../utils/constants';
 import { toast } from './Toaster';
+import { SectionSaveBar } from './settings/SectionSaveBar';
 import { SystemUpdatesSection } from './settings/SystemUpdatesSection';
 import { TemplatesSection } from './settings/TemplatesSection';
 import { UnsavedChangesModal } from './settings/UnsavedChangesModal';
@@ -79,27 +79,88 @@ export function SettingsView() {
     setForm({ ...settings, smtpPass: '' });
   }, [settings]);
 
-  const isDirty = useMemo(() => {
-    return (
-      form.smtpHost !== settings.smtpHost ||
-      String(form.smtpPort) !== String(settings.smtpPort) ||
-      form.smtpSecurity !== settings.smtpSecurity ||
-      form.smtpUser !== settings.smtpUser ||
-      Boolean(form.smtpPass && form.smtpPass.length > 0) ||
-      form.smtpFrom !== settings.smtpFrom ||
-      form.emailEnabled !== settings.emailEnabled ||
-      form.whatsappEnabled !== settings.whatsappEnabled ||
-      form.whatsappDeviceName !== settings.whatsappDeviceName ||
-      form.filenameTemplate !== settings.filenameTemplate ||
-      form.passwordMode !== settings.passwordMode ||
-      form.portalUrl !== settings.portalUrl ||
-      form.previewBeforeDispatch !== settings.previewBeforeDispatch ||
-      form.emailSubjectTemplate !== settings.emailSubjectTemplate ||
-      form.whatsappMessageTemplate !== settings.whatsappMessageTemplate ||
-      form.autoUpdateEnabled !== settings.autoUpdateEnabled ||
-      form.updateRepo !== settings.updateRepo
-    );
+  const sectionDirty = useMemo(() => {
+    return {
+      channels:
+        form.emailEnabled !== settings.emailEnabled ||
+        form.whatsappEnabled !== settings.whatsappEnabled ||
+        form.previewBeforeDispatch !== settings.previewBeforeDispatch,
+      smtp:
+        form.smtpHost !== settings.smtpHost ||
+        String(form.smtpPort) !== String(settings.smtpPort) ||
+        form.smtpSecurity !== settings.smtpSecurity ||
+        form.smtpUser !== settings.smtpUser ||
+        Boolean(form.smtpPass && form.smtpPass.length > 0) ||
+        form.smtpFrom !== settings.smtpFrom,
+      whatsapp: form.whatsappDeviceName !== settings.whatsappDeviceName,
+      defaults:
+        form.filenameTemplate !== settings.filenameTemplate ||
+        form.passwordMode !== settings.passwordMode ||
+        form.portalUrl !== settings.portalUrl,
+      templates:
+        form.emailSubjectTemplate !== settings.emailSubjectTemplate ||
+        form.whatsappMessageTemplate !== settings.whatsappMessageTemplate,
+      updates:
+        form.autoUpdateEnabled !== settings.autoUpdateEnabled ||
+        form.updateRepo !== settings.updateRepo,
+    };
   }, [form, settings]);
+
+  const isDirty =
+    sectionDirty.channels ||
+    sectionDirty.smtp ||
+    sectionDirty.whatsapp ||
+    sectionDirty.defaults ||
+    sectionDirty.templates ||
+    sectionDirty.updates;
+
+  const discardSection = (section: keyof typeof sectionDirty) => {
+    setForm((prev) => {
+      switch (section) {
+        case 'channels':
+          return {
+            ...prev,
+            emailEnabled: settings.emailEnabled,
+            whatsappEnabled: settings.whatsappEnabled,
+            previewBeforeDispatch: settings.previewBeforeDispatch,
+          };
+        case 'smtp':
+          return {
+            ...prev,
+            smtpHost: settings.smtpHost,
+            smtpPort: settings.smtpPort,
+            smtpSecurity: settings.smtpSecurity,
+            smtpUser: settings.smtpUser,
+            smtpPass: '',
+            smtpFrom: settings.smtpFrom,
+          };
+        case 'whatsapp':
+          return {
+            ...prev,
+            whatsappDeviceName: settings.whatsappDeviceName,
+          };
+        case 'defaults':
+          return {
+            ...prev,
+            filenameTemplate: settings.filenameTemplate,
+            passwordMode: settings.passwordMode,
+            portalUrl: settings.portalUrl,
+          };
+        case 'templates':
+          return {
+            ...prev,
+            emailSubjectTemplate: settings.emailSubjectTemplate,
+            whatsappMessageTemplate: settings.whatsappMessageTemplate,
+          };
+        case 'updates':
+          return {
+            ...prev,
+            autoUpdateEnabled: settings.autoUpdateEnabled,
+            updateRepo: settings.updateRepo,
+          };
+      }
+    });
+  };
 
   useEffect(() => {
     setSettingsDirty(isDirty);
@@ -649,6 +710,12 @@ export function SettingsView() {
               </div>
             </label>
           </div>
+
+          <SectionSaveBar
+            dirty={sectionDirty.channels}
+            saving={saving}
+            onDiscard={() => discardSection('channels')}
+          />
         </section>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -768,6 +835,12 @@ export function SettingsView() {
                 />
               </div>
             </div>
+
+            <SectionSaveBar
+              dirty={sectionDirty.smtp}
+              saving={saving}
+              onDiscard={() => discardSection('smtp')}
+            />
           </section>
 
           <WhatsAppGatewayCard
@@ -777,10 +850,13 @@ export function SettingsView() {
             loadingQr={loadingQr}
             reconnecting={reconnecting}
             unlinking={unlinking}
+            dirty={sectionDirty.whatsapp}
+            saving={saving}
             onRefreshQr={() => void loadQr(true)}
             onReconnect={() => void handleReconnectWhatsApp()}
             onUnlink={() => void handleUnlinkDevice()}
             onDeviceNameChange={(name) => setForm({ ...form, whatsappDeviceName: name })}
+            onDiscard={() => discardSection('whatsapp')}
           />
         </div>
 
@@ -838,14 +914,23 @@ export function SettingsView() {
           <p className="text-xs text-slate-500 pt-1">
             Installed desktop packages store SQLite databases and configuration privately in your OS hidden user application data folder and remove them automatically upon uninstallation.
           </p>
+
+          <SectionSaveBar
+            dirty={sectionDirty.defaults}
+            saving={saving}
+            onDiscard={() => discardSection('defaults')}
+          />
         </section>
 
         <TemplatesSection
           emailSubjectTemplate={form.emailSubjectTemplate}
           whatsappMessageTemplate={form.whatsappMessageTemplate}
           portalUrl={form.portalUrl}
+          dirty={sectionDirty.templates}
+          saving={saving}
           onChangeSubject={(next) => setForm({ ...form, emailSubjectTemplate: next })}
           onChangeWhatsapp={(next) => setForm({ ...form, whatsappMessageTemplate: next })}
+          onDiscard={() => discardSection('templates')}
         />
 
         <SystemUpdatesSection
@@ -857,22 +942,14 @@ export function SettingsView() {
           checkingUpdate={checkingUpdate}
           applyingUpdate={applyingUpdate}
           restartingApp={restartingApp}
+          dirty={sectionDirty.updates}
+          saving={saving}
           onToggleAutoUpdate={(enabled) => setForm({ ...form, autoUpdateEnabled: enabled })}
           onChangeUpdateRepo={(repo) => setForm({ ...form, updateRepo: repo })}
           onCheckNow={() => void handleCheckForUpdates()}
           onApplyUpdate={() => void handleApplyUpdate()}
+          onDiscard={() => discardSection('updates')}
         />
-
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-8 h-12 rounded bg-[#2B7A3B] text-white text-xs font-bold tracking-[0.16em] uppercase hover:bg-[#226430] disabled:opacity-50 cursor-pointer whitespace-nowrap"
-          >
-            <Save className="w-4 h-4" aria-hidden="true" />
-            <span>{saving ? 'SAVING...' : 'SAVE SYSTEM CONFIGURATION'}</span>
-          </button>
-        </div>
       </form>
 
       <UnsavedChangesModal

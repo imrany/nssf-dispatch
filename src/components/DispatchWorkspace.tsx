@@ -114,9 +114,31 @@ export function DispatchWorkspace() {
   }, [step, channel, emailReady, whatsappReady, bothReady]);
 
   const handleSelectChannel = (chosen: DispatchChannel) => {
-    if (chosen === 'email' && !emailReady) return;
-    if (chosen === 'whatsapp' && !whatsappReady) return;
-    if (chosen === 'both' && !bothReady) return;
+    if (chosen === 'email' && !emailReady) {
+      toast.error(
+        'Email dispatch unavailable',
+        !settings.emailEnabled
+          ? 'Email dispatch is disabled in Settings.'
+          : 'Configure SMTP host, username, and password in Settings first.'
+      );
+      return;
+    }
+    if (chosen === 'whatsapp' && !whatsappReady) {
+      toast.error(
+        'WhatsApp dispatch unavailable',
+        !settings.whatsappEnabled
+          ? 'WhatsApp dispatch is disabled in Settings.'
+          : 'Pair a WhatsApp device QR code in Settings first.'
+      );
+      return;
+    }
+    if (chosen === 'both' && !bothReady) {
+      toast.error(
+        'Dual dispatch unavailable',
+        'Both Email (SMTP) and WhatsApp must be enabled and configured in Settings first.'
+      );
+      return;
+    }
     setChannel(chosen);
     setHoveredCard(null);
     setErrorMsg('');
@@ -173,13 +195,89 @@ export function DispatchWorkspace() {
     }
   };
 
+  const getDispatchFailureTitle = (activeChannel: DispatchChannel, reason: string): string => {
+    const lower = reason.toLowerCase();
+    if (lower.includes('whatsapp error')) {
+      return 'WhatsApp dispatch failed';
+    }
+    if (lower.includes('email error')) {
+      return 'Email dispatch failed';
+    }
+    if (activeChannel === 'email') return 'Email dispatch failed';
+    if (activeChannel === 'whatsapp') return 'WhatsApp dispatch failed';
+    if (lower.includes('whatsapp')) return 'WhatsApp dispatch failed';
+    if (lower.includes('email') || lower.includes('smtp')) return 'Email dispatch failed';
+    return 'Email & WhatsApp dispatch failed';
+  };
+
+  const extractDispatchError = (err: unknown): string => {
+    if (err instanceof Error && err.message.trim()) {
+      return err.message.trim();
+    }
+    if (typeof err === 'string' && err.trim()) {
+      return err.trim();
+    }
+    if (err && typeof err === 'object') {
+      const maybeObj = err as { error?: unknown; message?: unknown };
+      if (typeof maybeObj.error === 'string' && maybeObj.error.trim()) {
+        return maybeObj.error.trim();
+      }
+      if (typeof maybeObj.message === 'string' && maybeObj.message.trim()) {
+        return maybeObj.message.trim();
+      }
+    }
+    return 'Network error communicating with the NSSF Dispatch Server.';
+  };
+
   const executeDispatch = async (overrideChannel?: DispatchChannel) => {
+    if (submitting) return;
     setErrorMsg('');
     const activeChannel = overrideChannel ?? channel;
 
     if (!file || !validatedMeta) {
+      const msg = 'Please attach and validate an official NSSF statement PDF before dispatching.';
       setPreviewOpen(false);
+      setErrorMsg(msg);
+      toast.error(getDispatchFailureTitle(activeChannel, msg), msg);
       setStep('validate');
+      return;
+    }
+
+    if ((activeChannel === 'email' || activeChannel === 'both') && !emailReady) {
+      const msg = !settings.emailEnabled
+        ? 'Email dispatch is disabled in System Settings.'
+        : 'Email (SMTP) is not configured in System Settings.';
+      setPreviewOpen(false);
+      setErrorMsg(msg);
+      toast.error('Email dispatch failed', msg);
+      return;
+    }
+
+    if ((activeChannel === 'whatsapp' || activeChannel === 'both') && !whatsappReady) {
+      const msg = !settings.whatsappEnabled
+        ? 'WhatsApp dispatch is disabled in System Settings.'
+        : 'WhatsApp device is not paired in System Settings.';
+      setPreviewOpen(false);
+      setErrorMsg(msg);
+      toast.error('WhatsApp dispatch failed', msg);
+      return;
+    }
+
+    if ((activeChannel === 'email' || activeChannel === 'both') && !isValidEmail(email)) {
+      const msg = 'Please enter a valid member email address before sending.';
+      setPreviewOpen(false);
+      setErrorMsg(msg);
+      focusFieldById('member-email');
+      toast.error('Email dispatch failed', msg);
+      return;
+    }
+
+    if ((activeChannel === 'whatsapp' || activeChannel === 'both') && !isValidWhatsappNumber(whatsapp)) {
+      const msg = 'Please enter a valid member WhatsApp phone number (at least 9 digits).';
+      setPreviewOpen(false);
+      setErrorMsg(msg);
+      focusFieldById('member-whatsapp');
+      toast.error('WhatsApp dispatch failed', msg);
       return;
     }
 
@@ -192,6 +290,16 @@ export function DispatchWorkspace() {
         whatsapp,
         file,
       });
+      if (!data || !data.ok) {
+        const msg =
+          (data && 'error' in data && typeof (data as { error?: unknown }).error === 'string'
+            ? (data as { error: string }).error.trim()
+            : '') || 'Statement dispatch failed.';
+        setPreviewOpen(false);
+        setErrorMsg(msg);
+        toast.error(getDispatchFailureTitle(activeChannel, msg), msg);
+        return;
+      }
       setPreviewOpen(false);
       toast.success(
         'Statement dispatched',
@@ -199,12 +307,10 @@ export function DispatchWorkspace() {
       );
       setReceipt(data);
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : 'Network error communicating with the NSSF Dispatch Server.';
+      const msg = extractDispatchError(err);
+      setPreviewOpen(false);
       setErrorMsg(msg);
-      toast.error('Statement dispatch failed', msg);
+      toast.error(getDispatchFailureTitle(activeChannel, msg), msg);
     } finally {
       setSubmitting(false);
     }
@@ -238,7 +344,7 @@ export function DispatchWorkspace() {
 
     if (key === 'e') {
       if (!emailReady) {
-        toast.warning(
+        toast.error(
           'Email channel unavailable',
           !settings.emailEnabled
             ? 'Enable Email in System Settings to use Ctrl+E.'
@@ -261,11 +367,10 @@ export function DispatchWorkspace() {
         if (emailValid) {
           void executeDispatch('email');
         } else {
+          const msg = 'Enter a valid member email address and press Ctrl+E again to send.';
+          setErrorMsg(msg);
           focusFieldById('member-email');
-          toast.warning(
-            'Enter member email',
-            'Channel set to Email Only. Enter recipient email and press Ctrl+E again to send.'
-          );
+          toast.error('Invalid member email', msg);
         }
       }
       return;
@@ -273,7 +378,7 @@ export function DispatchWorkspace() {
 
     if (key === 'w') {
       if (!whatsappReady) {
-        toast.warning(
+        toast.error(
           'WhatsApp channel unavailable',
           !settings.whatsappEnabled
             ? 'Enable WhatsApp in System Settings to use Ctrl+W.'
@@ -299,11 +404,10 @@ export function DispatchWorkspace() {
         if (whatsappValid) {
           void executeDispatch('whatsapp');
         } else {
+          const msg = 'Enter a valid WhatsApp phone number and press Ctrl+W again to send.';
+          setErrorMsg(msg);
           focusFieldById('member-whatsapp');
-          toast.warning(
-            'Enter WhatsApp number',
-            'Channel set to WhatsApp Only. Enter phone number and press Ctrl+W again to send.'
-          );
+          toast.error('Invalid WhatsApp number', msg);
         }
       }
       return;
@@ -311,7 +415,7 @@ export function DispatchWorkspace() {
 
     if (key === 'b') {
       if (!bothReady) {
-        toast.warning(
+        toast.error(
           'Dual channel unavailable',
           'Both Email (SMTP) and WhatsApp must be enabled and set up in System Settings to use Ctrl+B.'
         );
@@ -335,11 +439,10 @@ export function DispatchWorkspace() {
         if (emailValid && whatsappValid) {
           void executeDispatch('both');
         } else {
+          const msg = 'Enter both a valid Email and WhatsApp number, then press Ctrl+B again to send.';
+          setErrorMsg(msg);
           focusFieldById(!emailValid ? 'member-email' : 'member-whatsapp');
-          toast.warning(
-            'Complete recipient details',
-            'Enter both Email and WhatsApp number, then press Ctrl+B again to send.'
-          );
+          toast.error('Incomplete recipient details', msg);
         }
       }
     }
@@ -612,6 +715,7 @@ export function DispatchWorkspace() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18, ease: SMOOTH_EASE }}
+            noValidate
             onSubmit={handleValidateStep}
             className="space-y-6"
           >
@@ -830,6 +934,7 @@ export function DispatchWorkspace() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18, ease: SMOOTH_EASE }}
+            noValidate
             onSubmit={handleDispatch}
             className="space-y-6"
           >

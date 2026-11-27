@@ -14,6 +14,7 @@ export interface ToastItem {
 type Listener = (items: ToastItem[]) => void;
 
 const TOAST_DURATION_MS = 4500;
+const ERROR_TOAST_DURATION_MS = 6500;
 const listeners = new Set<Listener>();
 let items: ToastItem[] = [];
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -25,12 +26,13 @@ function emit() {
   }
 }
 
-function scheduleDismiss(id: string) {
+function scheduleDismiss(id: string, variant: ToastVariant = 'success') {
   const existing = timers.get(id);
   if (existing) clearTimeout(existing);
+  const duration = variant === 'error' ? ERROR_TOAST_DURATION_MS : TOAST_DURATION_MS;
   const timer = setTimeout(() => {
     dismissToast(id);
-  }, TOAST_DURATION_MS);
+  }, duration);
   timers.set(id, timer);
 }
 
@@ -38,7 +40,7 @@ function addToast(variant: ToastVariant, title: string, description?: string): s
   const id = `nssf-toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   items = [...items.slice(-4), { id, variant, title, description }];
   emit();
-  scheduleDismiss(id);
+  scheduleDismiss(id, variant);
   return id;
 }
 
@@ -113,7 +115,7 @@ export function Toaster() {
     <div
       aria-live="polite"
       aria-label="Notifications"
-      className="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 w-[calc(100%-2.5rem)] max-w-sm pointer-events-none"
+      className="fixed bottom-5 right-5 z-[100] flex flex-col gap-2.5 w-[calc(100%-2.5rem)] max-w-sm pointer-events-none"
     >
       <AnimatePresence mode="popLayout">
         {activeToasts.map((item) => {
@@ -129,14 +131,16 @@ export function Toaster() {
               exit={{ opacity: 0, y: 8, scale: 0.96 }}
               transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
               onMouseEnter={() => pauseToastTimer(item.id)}
-              onMouseLeave={() => scheduleDismiss(item.id)}
+              onMouseLeave={() => scheduleDismiss(item.id, item.variant)}
               className={`pointer-events-auto bg-white border rounded-lg p-3.5 shadow-[0_10px_28px_rgba(15,36,55,0.14)] flex items-start gap-3 ${style.container}`}
             >
               <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${style.iconClass}`} aria-hidden="true" />
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-bold text-[#0F2437] leading-snug">{item.title}</p>
                 {item.description && (
-                  <p className="text-xs text-slate-600 mt-0.5 leading-snug">{item.description}</p>
+                  <p className="text-xs text-slate-600 mt-0.5 leading-snug break-words whitespace-pre-line">
+                    {item.description}
+                  </p>
                 )}
               </div>
               <button

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { WhatsAppQrData } from '../../types';
+import { SectionSaveBar } from './SectionSaveBar';
 
 interface WhatsAppGatewayCardProps {
   qrData: WhatsAppQrData | null;
@@ -16,10 +17,13 @@ interface WhatsAppGatewayCardProps {
   loadingQr: boolean;
   reconnecting: boolean;
   unlinking: boolean;
+  dirty: boolean;
+  saving: boolean;
   onRefreshQr: () => void;
   onReconnect: () => void;
   onUnlink: () => void;
   onDeviceNameChange: (name: string) => void;
+  onDiscard: () => void;
 }
 
 export function WhatsAppGatewayCard({
@@ -29,10 +33,13 @@ export function WhatsAppGatewayCard({
   loadingQr,
   reconnecting,
   unlinking,
+  dirty,
+  saving,
   onRefreshQr,
   onReconnect,
   onUnlink,
   onDeviceNameChange,
+  onDiscard,
 }: WhatsAppGatewayCardProps) {
   const qrDataUri = qrData?.qrSvg
     ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(qrData.qrSvg)}`
@@ -222,6 +229,8 @@ export function WhatsAppGatewayCard({
           />
         </div>
       </div>
+
+      <SectionSaveBar dirty={dirty} saving={saving} onDiscard={onDiscard} />
     </section>
   );
 }

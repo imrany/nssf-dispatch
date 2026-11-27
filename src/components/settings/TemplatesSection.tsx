@@ -8,21 +8,28 @@ import {
   TEMPLATE_PLACEHOLDERS,
 } from '../../utils/constants';
 import { renderPreviewTemplate } from '../../utils/validation';
+import { SectionSaveBar } from './SectionSaveBar';
 
 interface TemplatesSectionProps {
   emailSubjectTemplate: string;
   whatsappMessageTemplate: string;
   portalUrl: string;
+  dirty: boolean;
+  saving: boolean;
   onChangeSubject: (next: string) => void;
   onChangeWhatsapp: (next: string) => void;
+  onDiscard: () => void;
 }
 
 export function TemplatesSection({
   emailSubjectTemplate,
   whatsappMessageTemplate,
   portalUrl,
+  dirty,
+  saving,
   onChangeSubject,
   onChangeWhatsapp,
+  onDiscard,
 }: TemplatesSectionProps) {
   const [expanded, setExpanded] = useState(false);
   const [activeField, setActiveField] = useState<'subject' | 'whatsapp'>('whatsapp');
@@ -241,6 +248,8 @@ export function TemplatesSection({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <SectionSaveBar dirty={dirty} saving={saving} onDiscard={onDiscard} />
     </section>
   );
 }

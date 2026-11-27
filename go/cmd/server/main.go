@@ -551,7 +551,11 @@ func main() {
 			return
 		}
 		defer file.Close()
-		rawPDF, _ := io.ReadAll(file)
+		rawPDF, readErr := io.ReadAll(file)
+		if readErr != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Failed to read uploaded statement PDF: " + readErr.Error()})
+			return
+		}
 
 		if (channel == "email" || channel == "both") && !emailRe.MatchString(email) {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid member email address."})
@@ -562,7 +566,11 @@ func main() {
 			return
 		}
 
-		cfg, _ := GetRawSettings()
+		cfg, cfgErr := GetRawSettings()
+		if cfgErr != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to load dispatch settings: " + cfgErr.Error()})
+			return
+		}
 		if (channel == "email" || channel == "both") && !cfg.EmailEnabled {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Email dispatch is disabled in System Settings."})
 			return
@@ -594,7 +602,7 @@ func main() {
 
 		encryptedPDF, err := EncryptPDFWithPassword(rawPDF, rawPassword)
 		if err != nil {
-			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to encrypt statement PDF"})
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to encrypt statement PDF: " + err.Error()})
 			return
 		}
 
@@ -615,7 +623,11 @@ func main() {
 		if channel == "whatsapp" || channel == "both" {
 			if err := SendWhatsAppStatement(cfg, whatsapp, meta, renamedFile, encryptedPDF, rawPassword); err != nil {
 				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "FAILED", err.Error())
-				writeJSON(w, 502, map[string]any{"ok": false, "error": "WhatsApp error: " + err.Error()})
+				errPrefix := "WhatsApp error: "
+				if len(delivered) > 0 {
+					errPrefix = "Email was delivered, but WhatsApp error: "
+				}
+				writeJSON(w, 502, map[string]any{"ok": false, "error": errPrefix + err.Error()})
 				return
 			}
 			_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "SENT", "WhatsApp document dispatched via paired desk gateway")

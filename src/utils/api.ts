@@ -32,23 +32,64 @@ export async function requestJson<T>(
     mergedHeaders.set('Authorization', `Bearer ${token}`);
   }
 
-  const res = await fetch(url, {
-    ...rest,
-    headers: mergedHeaders,
-  });
-
-  let data: Record<string, unknown> | null = null;
+  let res: Response;
   try {
-    data = (await res.json()) as Record<string, unknown>;
-  } catch {
-    data = null;
+    res = await fetch(url, {
+      ...rest,
+      headers: mergedHeaders,
+    });
+  } catch (err) {
+    const detail = err instanceof Error && err.message ? ` (${err.message})` : '';
+    throw new ApiError(
+      `Unable to reach the NSSF dispatch server${detail}. Please verify the server is running and try again.`,
+      0,
+      err
+    );
   }
+
+  const rawText = await res.text();
+  let data: Record<string, unknown> | null = null;
+  if (rawText.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(rawText);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        data = parsed as Record<string, unknown>;
+      }
+    } catch {
+      data = null;
+    }
+  }
+
+  const extractBackendMessage = (): string => {
+    if (data) {
+      if (typeof data.error === 'string' && data.error.trim()) return data.error.trim();
+      if (typeof data.message === 'string' && data.message.trim()) return data.message.trim();
+    }
+    const trimmed = rawText.trim();
+    if (trimmed && !trimmed.startsWith('<')) {
+      return trimmed.length > 260 ? `${trimmed.slice(0, 260)}...` : trimmed;
+    }
+    return '';
+  };
 
   if (!res.ok) {
     const message =
-      (data && typeof data.error === 'string' && data.error) ||
-      `Request failed with status ${res.status}`;
+      extractBackendMessage() ||
+      `Request failed with status ${res.status}${res.statusText ? ` (${res.statusText})` : ''}`;
+    throw new ApiError(message, res.status, data ?? rawText);
+  }
+
+  if (data && data.ok === false) {
+    const message = extractBackendMessage() || 'The server reported that the request failed.';
     throw new ApiError(message, res.status, data);
+  }
+
+  if (data === null && rawText.trim()) {
+    throw new ApiError(
+      extractBackendMessage() || 'Server returned an unexpected non-JSON response.',
+      res.status,
+      rawText
+    );
   }
 
   return data as T;
