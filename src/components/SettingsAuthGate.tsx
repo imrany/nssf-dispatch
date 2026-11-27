@@ -37,7 +37,6 @@ export function SettingsAuthGate({
   initialSetupRequired?: boolean;
 }) {
   const {
-    appName,
     authStatus: ctxAuthStatus,
     pendingRecoveryKey,
     clearPendingRecoveryKey,
@@ -310,10 +309,7 @@ export function SettingsAuthGate({
           <div className="py-5 border-b-4 border-[#2B7A3B] flex items-center gap-3">
             <ShieldCheck className="w-6 h-6 text-[#2B7A3B] shrink-0" aria-hidden="true" />
             <div>
-              <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#1E6B34]">
-                {appName}
-              </div>
-              <h1 className="font-display text-xl font-extrabold tracking-tight text-[#0F2437] mt-0.5">
+              <h1 className="font-display text-xl font-extrabold tracking-tight text-[#0F2437]">
                 Save Your Backup Recovery Key
               </h1>
             </div>
@@ -436,18 +432,13 @@ export function SettingsAuthGate({
         className="overflow-hidden"
       >
         <div className="py-5 border-b-4 border-[#2B7A3B] flex items-center justify-between gap-4">
-          <div>
-            <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#1E6B34]">
-              {appName}
-            </div>
-            <h1 className="font-display text-xl font-extrabold tracking-tight text-[#0F2437] mt-0.5">
-              {isSetupMode
-                ? 'Setup Admin Account'
-                : isForgotMode
-                  ? 'Reset Administrator Password'
-                  : 'Administrator Sign In'}
-            </h1>
-          </div>
+          <h1 className="font-display text-xl font-extrabold tracking-tight text-[#0F2437]">
+            {isSetupMode
+              ? 'Setup Admin Account'
+              : isForgotMode
+                ? 'Reset Administrator Password'
+                : 'Administrator Sign In'}
+          </h1>
         </div>
 
         {isForgotMode ? (

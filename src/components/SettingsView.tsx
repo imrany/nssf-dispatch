@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   ClipboardList,
   Lock,
@@ -645,40 +646,53 @@ export function SettingsView() {
   return (
     <div className="py-4 sm:py-8 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <nav aria-label="Settings navigation" className="flex flex-wrap items-center gap-1 -ml-2.5">
-          <button
-            type="button"
-            onClick={() => navigateTo(ROUTES.AUDIT)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
-          >
-            <ClipboardList className="w-3.5 h-3.5 text-[#2B7A3B]" aria-hidden="true" />
-            <span>Audit Logs</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => navigateTo(ROUTES.SECURITY)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:text-[#0F2437] hover:bg-slate-100/80 transition-colors cursor-pointer whitespace-nowrap"
-          >
-            <ShieldCheck className="w-3.5 h-3.5 text-[#2B7A3B]" aria-hidden="true" />
-            <span>Security</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleLockButtonClick}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:text-red-700 hover:bg-red-50/70 transition-colors cursor-pointer whitespace-nowrap"
-          >
-            <Lock className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Lock Settings</span>
-          </button>
-        </nav>
-
         <BackButton
-          align="right"
+          align="left"
           label="Back to Service Desk"
           onClick={() => navigateTo(ROUTES.STATEMENTS)}
         />
+
+        <nav aria-label="Settings navigation" className="flex flex-wrap items-center gap-4">
+          <Link
+            to={ROUTES.AUDIT}
+            onClick={(e) => {
+              if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                e.preventDefault();
+                navigateTo(ROUTES.AUDIT);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-[#2B7A3B] hover:underline underline-offset-4 transition-colors whitespace-nowrap"
+          >
+            <ClipboardList className="w-3.5 h-3.5 text-[#2B7A3B]" aria-hidden="true" />
+            <span>Audit Logs</span>
+          </Link>
+
+          <Link
+            to={ROUTES.SECURITY}
+            onClick={(e) => {
+              if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                e.preventDefault();
+                navigateTo(ROUTES.SECURITY);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-[#2B7A3B] hover:underline underline-offset-4 transition-colors whitespace-nowrap"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-[#2B7A3B]" aria-hidden="true" />
+            <span>Security</span>
+          </Link>
+
+          <a
+            href="#lock-settings"
+            onClick={(e) => {
+              e.preventDefault();
+              handleLockButtonClick();
+            }}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-red-700 hover:underline underline-offset-4 transition-colors whitespace-nowrap"
+          >
+            <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Lock Settings</span>
+          </a>
+        </nav>
       </div>
 
       <PageHeader
