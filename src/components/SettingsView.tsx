@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ClipboardList,
   Lock,
@@ -74,17 +74,23 @@ export function SettingsView() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
   const [restartingApp, setRestartingApp] = useState(false);
+  const [togglingFields, setTogglingFields] = useState<Record<string, boolean>>({});
+
+  const settingsRef = useRef(settings);
+  const skipNextFormSyncRef = useRef(false);
+  const toggleQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
+    settingsRef.current = settings;
+    if (skipNextFormSyncRef.current) {
+      skipNextFormSyncRef.current = false;
+      return;
+    }
     setForm({ ...settings, smtpPass: '' });
   }, [settings]);
 
   const sectionDirty = useMemo(() => {
     return {
-      channels:
-        form.emailEnabled !== settings.emailEnabled ||
-        form.whatsappEnabled !== settings.whatsappEnabled ||
-        form.previewBeforeDispatch !== settings.previewBeforeDispatch,
       smtp:
         form.smtpHost !== settings.smtpHost ||
         String(form.smtpPort) !== String(settings.smtpPort) ||
@@ -100,14 +106,11 @@ export function SettingsView() {
       templates:
         form.emailSubjectTemplate !== settings.emailSubjectTemplate ||
         form.whatsappMessageTemplate !== settings.whatsappMessageTemplate,
-      updates:
-        form.autoUpdateEnabled !== settings.autoUpdateEnabled ||
-        form.updateRepo !== settings.updateRepo,
+      updates: form.updateRepo !== settings.updateRepo,
     };
   }, [form, settings]);
 
   const isDirty =
-    sectionDirty.channels ||
     sectionDirty.smtp ||
     sectionDirty.whatsapp ||
     sectionDirty.defaults ||
@@ -117,13 +120,6 @@ export function SettingsView() {
   const discardSection = (section: keyof typeof sectionDirty) => {
     setForm((prev) => {
       switch (section) {
-        case 'channels':
-          return {
-            ...prev,
-            emailEnabled: settings.emailEnabled,
-            whatsappEnabled: settings.whatsappEnabled,
-            previewBeforeDispatch: settings.previewBeforeDispatch,
-          };
         case 'smtp':
           return {
             ...prev,
@@ -155,7 +151,6 @@ export function SettingsView() {
         case 'updates':
           return {
             ...prev,
-            autoUpdateEnabled: settings.autoUpdateEnabled,
             updateRepo: settings.updateRepo,
           };
       }
@@ -348,6 +343,77 @@ export function SettingsView() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleAutoToggle = (
+    field: 'emailEnabled' | 'whatsappEnabled' | 'previewBeforeDispatch' | 'autoUpdateEnabled',
+    nextValue: boolean,
+    label: string
+  ) => {
+    setSaveError('');
+    setForm((prev) => ({ ...prev, [field]: nextValue }));
+    setTogglingFields((prev) => ({ ...prev, [field]: true }));
+
+    toggleQueueRef.current = toggleQueueRef.current
+      .then(async () => {
+        const base = settingsRef.current;
+        const payload: AppSettings = { ...base, smtpPass: '', [field]: nextValue };
+        const data = await saveSettingsApi(token, payload);
+        settingsRef.current = data.settings;
+        skipNextFormSyncRef.current = true;
+        setSettings(data.settings);
+        setForm((prev) => ({
+          ...prev,
+          [field]: data.settings[field],
+          emailConfigured: data.settings.emailConfigured,
+          whatsappPaired: data.settings.whatsappPaired,
+          hasSmtpPass: data.settings.hasSmtpPass,
+        }));
+
+        toast.success(
+          `${label} ${nextValue ? 'enabled' : 'disabled'}`,
+          'Updated automatically in SQLite.'
+        );
+
+        if (
+          field === 'emailEnabled' &&
+          nextValue &&
+          !data.settings.emailConfigured
+        ) {
+          toast.warning(
+            'SMTP credentials incomplete',
+            'Email dispatch stays unavailable on the Service Desk until SMTP host, username, and password are saved.'
+          );
+        } else if (field === 'whatsappEnabled' && nextValue && !isPaired) {
+          toast.warning(
+            'WhatsApp device not yet paired',
+            'WhatsApp dispatch stays unavailable on the Service Desk until a WhatsApp QR code is paired.'
+          );
+        } else if (
+          (field === 'emailEnabled' || field === 'whatsappEnabled') &&
+          !data.settings.emailEnabled &&
+          !data.settings.whatsappEnabled
+        ) {
+          toast.warning(
+            'All dispatch channels disabled',
+            'Staff cannot send statements until Email or WhatsApp is enabled.'
+          );
+        }
+      })
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 401) {
+          logoutAdmin('expired');
+          return;
+        }
+        const revertedValue = settingsRef.current[field];
+        setForm((prev) => ({ ...prev, [field]: revertedValue }));
+        const msg = err instanceof Error ? err.message : `Unable to update ${label}.`;
+        setSaveError(msg);
+        toast.error(`Failed to update ${label}`, msg);
+      })
+      .finally(() => {
+        setTogglingFields((prev) => ({ ...prev, [field]: false }));
+      });
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -655,15 +721,29 @@ export function SettingsView() {
           </h2>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <label className="flex items-start gap-3 p-4 rounded-md border border-slate-200 cursor-pointer hover:border-slate-300">
+            <label
+              className={`flex items-start gap-3 p-4 rounded-md border border-slate-200 transition-colors ${
+                togglingFields.emailEnabled || saving
+                  ? 'opacity-70 cursor-wait'
+                  : 'cursor-pointer hover:border-slate-300'
+              }`}
+            >
               <input
                 type="checkbox"
                 checked={form.emailEnabled}
-                onChange={(e) => setForm({ ...form, emailEnabled: e.target.checked })}
+                disabled={Boolean(togglingFields.emailEnabled) || saving}
+                onChange={(e) =>
+                  handleAutoToggle('emailEnabled', e.target.checked, 'Email (SMTP) dispatch')
+                }
                 className="mt-1 h-4 w-4 accent-[#006837]"
               />
               <div>
-                <div className="text-sm font-semibold text-slate-900">Enable Email (SMTP)</div>
+                <div className="text-sm font-semibold text-slate-900">
+                  Enable Email (SMTP)
+                  {togglingFields.emailEnabled && (
+                    <span className="ml-2 text-[11px] font-medium text-[#2B7A3B]">Saving...</span>
+                  )}
+                </div>
                 <div className="text-xs text-slate-500 mt-0.5">
                   Allow staff to dispatch protected statements via Email once SMTP credentials are configured.
                 </div>
@@ -675,15 +755,29 @@ export function SettingsView() {
               </div>
             </label>
 
-            <label className="flex items-start gap-3 p-4 rounded-md border border-slate-200 cursor-pointer hover:border-slate-300">
+            <label
+              className={`flex items-start gap-3 p-4 rounded-md border border-slate-200 transition-colors ${
+                togglingFields.whatsappEnabled || saving
+                  ? 'opacity-70 cursor-wait'
+                  : 'cursor-pointer hover:border-slate-300'
+              }`}
+            >
               <input
                 type="checkbox"
                 checked={form.whatsappEnabled}
-                onChange={(e) => setForm({ ...form, whatsappEnabled: e.target.checked })}
+                disabled={Boolean(togglingFields.whatsappEnabled) || saving}
+                onChange={(e) =>
+                  handleAutoToggle('whatsappEnabled', e.target.checked, 'WhatsApp dispatch')
+                }
                 className="mt-1 h-4 w-4 accent-[#006837]"
               />
               <div>
-                <div className="text-sm font-semibold text-slate-900">Enable WhatsApp</div>
+                <div className="text-sm font-semibold text-slate-900">
+                  Enable WhatsApp
+                  {togglingFields.whatsappEnabled && (
+                    <span className="ml-2 text-[11px] font-medium text-[#2B7A3B]">Saving...</span>
+                  )}
+                </div>
                 <div className="text-xs text-slate-500 mt-0.5">
                   Allow staff to send encrypted statements via WhatsApp once a device QR code is paired.
                 </div>
@@ -695,27 +789,39 @@ export function SettingsView() {
               </div>
             </label>
 
-            <label className="flex items-start gap-3 p-4 rounded-md border border-slate-200 cursor-pointer hover:border-slate-300">
+            <label
+              className={`flex items-start gap-3 p-4 rounded-md border border-slate-200 transition-colors ${
+                togglingFields.previewBeforeDispatch || saving
+                  ? 'opacity-70 cursor-wait'
+                  : 'cursor-pointer hover:border-slate-300'
+              }`}
+            >
               <input
                 type="checkbox"
                 checked={form.previewBeforeDispatch}
-                onChange={(e) => setForm({ ...form, previewBeforeDispatch: e.target.checked })}
+                disabled={Boolean(togglingFields.previewBeforeDispatch) || saving}
+                onChange={(e) =>
+                  handleAutoToggle(
+                    'previewBeforeDispatch',
+                    e.target.checked,
+                    'Pre-Send Preview Modal'
+                  )
+                }
                 className="mt-1 h-4 w-4 accent-[#006837]"
               />
               <div>
-                <div className="text-sm font-semibold text-slate-900">Pre-Send Preview Modal</div>
+                <div className="text-sm font-semibold text-slate-900">
+                  Pre-Send Preview Modal
+                  {togglingFields.previewBeforeDispatch && (
+                    <span className="ml-2 text-[11px] font-medium text-[#2B7A3B]">Saving...</span>
+                  )}
+                </div>
                 <div className="text-xs text-slate-500 mt-0.5">
                   Allow staff to view parsed details and PDF preview before sending.
                 </div>
               </div>
             </label>
           </div>
-
-          <SectionSaveBar
-            dirty={sectionDirty.channels}
-            saving={saving}
-            onDiscard={() => discardSection('channels')}
-          />
         </section>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -944,7 +1050,10 @@ export function SettingsView() {
           restartingApp={restartingApp}
           dirty={sectionDirty.updates}
           saving={saving}
-          onToggleAutoUpdate={(enabled) => setForm({ ...form, autoUpdateEnabled: enabled })}
+          togglingAutoUpdate={Boolean(togglingFields.autoUpdateEnabled)}
+          onToggleAutoUpdate={(enabled) =>
+            handleAutoToggle('autoUpdateEnabled', enabled, 'Automatic Self-Update')
+          }
           onChangeUpdateRepo={(repo) => setForm({ ...form, updateRepo: repo })}
           onCheckNow={() => void handleCheckForUpdates()}
           onApplyUpdate={() => void handleApplyUpdate()}

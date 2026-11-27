@@ -14,6 +14,7 @@ interface SystemUpdatesSectionProps {
   restartingApp: boolean;
   dirty: boolean;
   saving: boolean;
+  togglingAutoUpdate?: boolean;
   onToggleAutoUpdate: (enabled: boolean) => void;
   onChangeUpdateRepo: (repo: string) => void;
   onCheckNow: () => void;
@@ -45,6 +46,7 @@ export function SystemUpdatesSection({
   restartingApp,
   dirty,
   saving,
+  togglingAutoUpdate = false,
   onToggleAutoUpdate,
   onChangeUpdateRepo,
   onCheckNow,
@@ -152,15 +154,27 @@ export function SystemUpdatesSection({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-        <label className="flex items-start gap-3 p-4 rounded-md border border-slate-200 cursor-pointer hover:border-slate-300">
+        <label
+          className={`flex items-start gap-3 p-4 rounded-md border border-slate-200 transition-colors ${
+            togglingAutoUpdate || saving
+              ? 'opacity-70 cursor-wait'
+              : 'cursor-pointer hover:border-slate-300'
+          }`}
+        >
           <input
             type="checkbox"
             checked={autoUpdateEnabled}
+            disabled={togglingAutoUpdate || saving}
             onChange={(e) => onToggleAutoUpdate(e.target.checked)}
             className="mt-1 h-4 w-4 accent-[#006837]"
           />
           <div>
-            <div className="text-sm font-semibold text-slate-900">Enable Automatic Self-Update</div>
+            <div className="text-sm font-semibold text-slate-900">
+              Enable Automatic Self-Update
+              {togglingAutoUpdate && (
+                <span className="ml-2 text-[11px] font-medium text-[#2B7A3B]">Saving...</span>
+              )}
+            </div>
             <div className="text-xs text-slate-500 mt-0.5 leading-relaxed">
               Automatically checks GitHub Releases in the background, verifies SHA-256 checksums, replaces the executable, and restarts when a newer version is released.
             </div>
