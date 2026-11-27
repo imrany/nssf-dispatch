@@ -672,18 +672,21 @@ func ApplySelfUpdate(ctx context.Context, restartAfter bool) UpdateStatus {
 		go triggerSelfRestart(exePath, shutdownFn)
 	}
 
+	LogSystemAudit("SYSTEM", "System", "", "UPDATES", finalStatus.Repo, assetName, "UPDATE_APPLIED", fmt.Sprintf("Application updated from v%s to v%s", strings.TrimPrefix(appVersion, "v"), latestVer))
 	return finalStatus
 }
 
 func setUpdateError(msg string, requiresElevation bool) UpdateStatus {
 	log.Printf("[UPDATER] %s", msg)
 	appUpdater.mu.Lock()
-	defer appUpdater.mu.Unlock()
 	appUpdater.status.State = "error"
 	appUpdater.status.Message = msg
 	appUpdater.status.RequiresElevation = requiresElevation
 	appUpdater.status.RestartScheduled = false
-	return appUpdater.status
+	st := appUpdater.status
+	appUpdater.mu.Unlock()
+	LogSystemAudit("SYSTEM", "System", "", "UPDATES", st.Repo, st.AssetName, "UPDATE_FAILED", msg)
+	return st
 }
 
 func triggerSelfRestart(exePath string, shutdownFn func()) {
@@ -751,7 +754,9 @@ func StartAutoUpdateLoop(shutdownFn func()) {
 			defer cancel()
 
 			st := CheckForUpdates(ctx)
-			if st.UpdateAvailable && st.CanSelfUpdate {
+			if st.State == "error" {
+				LogSystemAudit("SYSTEM", "System", "", "UPDATES", st.Repo, "", "UPDATE_CHECK_FAILED", st.Message)
+			} else if st.UpdateAvailable && st.CanSelfUpdate {
 				log.Printf("[UPDATER] New release v%s detected (current v%s). Starting automatic update...", st.LatestVersion, appVersion)
 				ApplySelfUpdate(ctx, true)
 			}

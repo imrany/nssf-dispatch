@@ -352,6 +352,8 @@ func main() {
 		return
 	}
 
+	LogSystemAudit("SYSTEM", "System", "", "SYSTEM", appName, "", "SYSTEM_STARTED", fmt.Sprintf("Application service started (v%s)", strings.TrimPrefix(appVersion, "v")))
+
 	if runUpdate {
 		RunCLIUpdate()
 		return
@@ -415,7 +417,7 @@ func main() {
 		writeJSON(w, 200, GetUpdateStatusSnapshot())
 	}))
 
-	mux.HandleFunc("/api/system/update/check", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+	mux.HandleFunc("/api/system/update/check", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -423,6 +425,14 @@ func main() {
 		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 		defer cancel()
 		st := CheckForUpdates(ctx)
+		ip := RealClientIP(r)
+		if st.State == "error" {
+			LogSystemAudit("SYSTEM", actor, ip, "UPDATES", st.Repo, "", "UPDATE_CHECK_FAILED", st.Message)
+		} else if st.UpdateAvailable {
+			LogSystemAudit("SYSTEM", actor, ip, "UPDATES", st.Repo, st.AssetName, "UPDATE_AVAILABLE", st.Message)
+		} else {
+			LogSystemAudit("SYSTEM", actor, ip, "UPDATES", st.Repo, "", "UPDATE_CHECKED", st.Message)
+		}
 		writeJSON(w, 200, st)
 	}))
 
@@ -458,23 +468,34 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		if !isInitialSetupDone() {
-			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Initial administrator setup is required before using the Service Desk."})
+			msg := "Initial administrator setup is required before using the Service Desk."
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "VALIDATION", "", "", "VERIFY_FAILED", msg)
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": msg})
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
 		if err := r.ParseMultipartForm(15 << 20); err != nil {
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "VALIDATION", "", "", "VERIFY_FAILED", "Invalid multipart upload during file check")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid multipart upload"})
 			return
 		}
-		file, _, err := r.FormFile("statement")
+		file, header, err := r.FormFile("statement")
 		if err != nil {
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "VALIDATION", "", "", "VERIFY_FAILED", "Statement file check attempted without a PDF upload")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please upload a member statement PDF."})
 			return
 		}
 		defer file.Close()
-		rawPDF, _ := io.ReadAll(file)
+		rawPDF, readErr := io.ReadAll(file)
+		if readErr != nil {
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "VALIDATION", "", header.Filename, "VERIFY_FAILED", "Failed to read uploaded PDF: "+readErr.Error())
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Failed to read uploaded statement PDF."})
+			return
+		}
 		if err := VerifyNSSFStatementFile(rawPDF); err != nil {
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "VALIDATION", "", header.Filename, "VERIFY_FAILED", err.Error())
 			writeJSON(w, 422, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
@@ -486,34 +507,86 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		if !isInitialSetupDone() {
-			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Initial administrator setup is required before using the Service Desk."})
+			msg := "Initial administrator setup is required before using the Service Desk."
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "VALIDATION", "", "", "VALIDATION_FAILED", msg)
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": msg})
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
 		if err := r.ParseMultipartForm(15 << 20); err != nil {
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "VALIDATION", "", "", "VALIDATION_FAILED", "Invalid multipart upload during statement validation")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid multipart upload"})
 			return
 		}
 		memberNo := strings.TrimSpace(r.FormValue("memberNo"))
-		file, _, err := r.FormFile("statement")
+		file, header, err := r.FormFile("statement")
 		if err != nil {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "VALIDATION",
+				Status:      "VALIDATION_FAILED",
+				Details:     "Validation attempted without uploading a statement PDF",
+			})
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please upload a member statement PDF."})
 			return
 		}
 		defer file.Close()
-		rawPDF, _ := io.ReadAll(file)
+		rawPDF, readErr := io.ReadAll(file)
+		if readErr != nil {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "VALIDATION",
+				RenamedFile: header.Filename,
+				Status:      "VALIDATION_FAILED",
+				Details:     "Failed to read uploaded statement PDF: " + readErr.Error(),
+			})
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Failed to read uploaded statement PDF."})
+			return
+		}
 
 		meta, err := ExtractAndValidatePDF(rawPDF, memberNo)
 		if err != nil {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "VALIDATION",
+				RenamedFile: header.Filename,
+				Status:      "VALIDATION_FAILED",
+				Details:     err.Error(),
+			})
 			writeJSON(w, 422, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		cfg, _ := GetRawSettings()
+		renamed := buildRenamedFile(cfg.FilenameTemplate, meta.MemberNo)
+		_ = InsertAuditEvent(AuditEvent{
+			EventType:   "DISPATCH",
+			Actor:       "Service Desk",
+			SourceIP:    ip,
+			MemberNo:    meta.MemberNo,
+			MemberName:  meta.MemberName,
+			Channel:     "VALIDATION",
+			RenamedFile: renamed,
+			Status:      "VALIDATED",
+			Details:     fmt.Sprintf("Statement verified and matched (Source: %s, Period: %s)", header.Filename, meta.Period),
+		})
 		writeJSON(w, 200, map[string]any{
 			"ok":          true,
 			"meta":        meta,
-			"renamedFile": buildRenamedFile(cfg.FilenameTemplate, meta.MemberNo),
+			"renamedFile": renamed,
 		})
 	})
 
@@ -522,12 +595,16 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		if !isInitialSetupDone() {
-			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Initial administrator setup is required before using the Service Desk."})
+			msg := "Initial administrator setup is required before using the Service Desk."
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "DISPATCH", "", "", "FAILED", msg)
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": msg})
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
 		if err := r.ParseMultipartForm(15 << 20); err != nil {
+			LogSystemAudit("DISPATCH", "Service Desk", ip, "DISPATCH", "", "", "FAILED", "Invalid form upload during dispatch: "+err.Error())
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid form upload"})
 			return
 		}
@@ -537,60 +614,196 @@ func main() {
 		if channel == "" {
 			channel = "email"
 		}
+		email := strings.TrimSpace(r.FormValue("email"))
+		whatsapp := strings.TrimSpace(r.FormValue("whatsapp"))
+		destSummary := strings.Trim(email+" / "+whatsapp, " /")
+
 		if channel != "email" && channel != "whatsapp" && channel != "both" {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     strings.ToUpper(channel),
+				Destination: destSummary,
+				Status:      "FAILED",
+				Details:     "Invalid dispatch channel selected: " + channel,
+			})
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid dispatch channel selected."})
 			return
 		}
 
-		email := strings.TrimSpace(r.FormValue("email"))
-		whatsapp := strings.TrimSpace(r.FormValue("whatsapp"))
-
 		file, header, err := r.FormFile("statement")
 		if err != nil {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     strings.ToUpper(channel),
+				Destination: destSummary,
+				Status:      "FAILED",
+				Details:     "Statement PDF upload is required for dispatch",
+			})
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Statement PDF upload is required."})
 			return
 		}
 		defer file.Close()
 		rawPDF, readErr := io.ReadAll(file)
 		if readErr != nil {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     strings.ToUpper(channel),
+				Destination: destSummary,
+				RenamedFile: header.Filename,
+				Status:      "FAILED",
+				Details:     "Failed to read uploaded statement PDF: " + readErr.Error(),
+			})
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Failed to read uploaded statement PDF: " + readErr.Error()})
 			return
 		}
 
 		if (channel == "email" || channel == "both") && !emailRe.MatchString(email) {
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid member email address."})
+			msg := "Please enter a valid member email address."
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "EMAIL",
+				Destination: email,
+				RenamedFile: header.Filename,
+				Status:      "VALIDATION_FAILED",
+				Details:     msg,
+			})
+			writeJSON(w, 400, map[string]any{"ok": false, "error": msg})
 			return
 		}
 		if (channel == "whatsapp" || channel == "both") && countDigits(whatsapp) < 9 {
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid member WhatsApp phone number."})
+			msg := "Please enter a valid member WhatsApp phone number."
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "WHATSAPP",
+				Destination: whatsapp,
+				RenamedFile: header.Filename,
+				Status:      "VALIDATION_FAILED",
+				Details:     msg,
+			})
+			writeJSON(w, 400, map[string]any{"ok": false, "error": msg})
 			return
 		}
 
 		cfg, cfgErr := GetRawSettings()
 		if cfgErr != nil {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     strings.ToUpper(channel),
+				Destination: destSummary,
+				RenamedFile: header.Filename,
+				Status:      "ERROR",
+				Details:     "Failed to load dispatch settings: " + cfgErr.Error(),
+			})
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to load dispatch settings: " + cfgErr.Error()})
 			return
 		}
 		if (channel == "email" || channel == "both") && !cfg.EmailEnabled {
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Email dispatch is disabled in System Settings."})
+			msg := "Email dispatch is disabled in System Settings."
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "EMAIL",
+				Destination: email,
+				RenamedFile: header.Filename,
+				Status:      "FAILED",
+				Details:     msg,
+			})
+			writeJSON(w, 400, map[string]any{"ok": false, "error": msg})
 			return
 		}
 		if (channel == "email" || channel == "both") && !cfg.EmailConfigured {
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Email (SMTP) is not set up yet. Configure SMTP host, username, and password in System Settings first."})
+			msg := "Email (SMTP) is not set up yet. Configure SMTP host, username, and password in System Settings first."
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "EMAIL",
+				Destination: email,
+				RenamedFile: header.Filename,
+				Status:      "FAILED",
+				Details:     msg,
+			})
+			writeJSON(w, 400, map[string]any{"ok": false, "error": msg})
 			return
 		}
 		if (channel == "whatsapp" || channel == "both") && !cfg.WhatsAppEnabled {
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "WhatsApp dispatch is disabled in System Settings."})
+			msg := "WhatsApp dispatch is disabled in System Settings."
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "WHATSAPP",
+				Destination: whatsapp,
+				RenamedFile: header.Filename,
+				Status:      "FAILED",
+				Details:     msg,
+			})
+			writeJSON(w, 400, map[string]any{"ok": false, "error": msg})
 			return
 		}
 		if (channel == "whatsapp" || channel == "both") && !cfg.WhatsAppPaired {
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "WhatsApp is not set up yet. Pair a WhatsApp device via QR code in System Settings first."})
+			msg := "WhatsApp is not set up yet. Pair a WhatsApp device via QR code in System Settings first."
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     "WHATSAPP",
+				Destination: whatsapp,
+				RenamedFile: header.Filename,
+				Status:      "FAILED",
+				Details:     msg,
+			})
+			writeJSON(w, 400, map[string]any{"ok": false, "error": msg})
 			return
 		}
 
 		meta, err := ExtractAndValidatePDF(rawPDF, memberNo)
 		if err != nil {
-			_ = InsertAuditLog(defaultStr(memberNo, "UNSPECIFIED"), "UNVERIFIED", strings.ToUpper(channel), strings.Trim(email+" / "+whatsapp, " /"), header.Filename, "VALIDATION_FAILED", err.Error())
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    defaultStr(memberNo, "UNSPECIFIED"),
+				MemberName:  "UNVERIFIED",
+				Channel:     strings.ToUpper(channel),
+				Destination: destSummary,
+				RenamedFile: header.Filename,
+				Status:      "VALIDATION_FAILED",
+				Details:     err.Error(),
+			})
 			writeJSON(w, 422, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
@@ -600,29 +813,74 @@ func main() {
 			rawPassword = meta.IDCardNo + meta.MemberNo[len(meta.MemberNo)-4:]
 		}
 
+		renamedFile := buildRenamedFile(cfg.FilenameTemplate, meta.MemberNo)
 		encryptedPDF, err := EncryptPDFWithPassword(rawPDF, rawPassword)
 		if err != nil {
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    meta.MemberNo,
+				MemberName:  meta.MemberName,
+				Channel:     strings.ToUpper(channel),
+				Destination: destSummary,
+				RenamedFile: renamedFile,
+				Status:      "ENCRYPTION_FAILED",
+				Details:     "Failed to encrypt statement PDF: " + err.Error(),
+			})
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to encrypt statement PDF: " + err.Error()})
 			return
 		}
 
-		renamedFile := buildRenamedFile(cfg.FilenameTemplate, meta.MemberNo)
 		subject, htmlBody, plainText, whatsappText, passwordGuide := BuildOfficialNSSFMessage(meta, renamedFile, cfg.PasswordMode, cfg.PortalURL, rawPassword, cfg.EmailSubjectTemplate, cfg.WhatsAppMessageTemplate)
 
 		var delivered []string
 		if channel == "email" || channel == "both" {
 			if err := SendEmailStatement(cfg, email, meta, renamedFile, encryptedPDF, rawPassword); err != nil {
-				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "EMAIL", email, renamedFile, "FAILED", err.Error())
+				_ = InsertAuditEvent(AuditEvent{
+					EventType:   "DISPATCH",
+					Actor:       "Service Desk",
+					SourceIP:    ip,
+					MemberNo:    meta.MemberNo,
+					MemberName:  meta.MemberName,
+					Channel:     "EMAIL",
+					Destination: email,
+					RenamedFile: renamedFile,
+					Status:      "FAILED",
+					Details:     err.Error(),
+				})
 				writeJSON(w, 502, map[string]any{"ok": false, "error": "Email error: " + err.Error()})
 				return
 			}
-			_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "EMAIL", email, renamedFile, "SENT", "SMTP delivered via "+cfg.SMTPHost)
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    meta.MemberNo,
+				MemberName:  meta.MemberName,
+				Channel:     "EMAIL",
+				Destination: email,
+				RenamedFile: renamedFile,
+				Status:      "SENT",
+				Details:     "Encrypted statement emailed via " + cfg.SMTPHost,
+			})
 			delivered = append(delivered, "EMAIL")
 		}
 
 		if channel == "whatsapp" || channel == "both" {
 			if err := SendWhatsAppStatement(cfg, whatsapp, meta, renamedFile, encryptedPDF, rawPassword); err != nil {
-				_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "FAILED", err.Error())
+				_ = InsertAuditEvent(AuditEvent{
+					EventType:   "DISPATCH",
+					Actor:       "Service Desk",
+					SourceIP:    ip,
+					MemberNo:    meta.MemberNo,
+					MemberName:  meta.MemberName,
+					Channel:     "WHATSAPP",
+					Destination: whatsapp,
+					RenamedFile: renamedFile,
+					Status:      "FAILED",
+					Details:     err.Error(),
+				})
 				errPrefix := "WhatsApp error: "
 				if len(delivered) > 0 {
 					errPrefix = "Email was delivered, but WhatsApp error: "
@@ -630,7 +888,18 @@ func main() {
 				writeJSON(w, 502, map[string]any{"ok": false, "error": errPrefix + err.Error()})
 				return
 			}
-			_ = InsertAuditLog(meta.MemberNo, meta.MemberName, "WHATSAPP", whatsapp, renamedFile, "SENT", "WhatsApp document dispatched via paired desk gateway")
+			_ = InsertAuditEvent(AuditEvent{
+				EventType:   "DISPATCH",
+				Actor:       "Service Desk",
+				SourceIP:    ip,
+				MemberNo:    meta.MemberNo,
+				MemberName:  meta.MemberName,
+				Channel:     "WHATSAPP",
+				Destination: whatsapp,
+				RenamedFile: renamedFile,
+				Status:      "SENT",
+				Details:     "Encrypted statement dispatched via paired WhatsApp device",
+			})
 			delivered = append(delivered, "WHATSAPP")
 		}
 
@@ -699,7 +968,9 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" || HasAdminAccount() {
+			LogSystemAudit("AUTH", "Anonymous", ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Attempted initial setup while an administrator account already exists")
 			writeJSON(w, 409, map[string]any{"ok": false, "error": "An administrator account is already configured. Please sign in."})
 			return
 		}
@@ -709,30 +980,36 @@ func main() {
 			RecoveryEmail string `json:"recoveryEmail"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			LogSystemAudit("AUTH", "Anonymous", ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Invalid JSON body during initial setup")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
 		username := strings.TrimSpace(body.Username)
 		if !usernameRe.MatchString(username) {
+			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Invalid administrator username format during setup")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
 			return
 		}
 		recoveryEmail := strings.TrimSpace(body.RecoveryEmail)
 		if recoveryEmail != "" && !emailRe.MatchString(recoveryEmail) {
+			LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", recoveryEmail, "", "SETUP_FAILED", "Invalid recovery email format during setup")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid recovery email address."})
 			return
 		}
 		if len(body.Password) < 8 || len(body.Password) > 128 {
+			LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Password did not meet length policy (8-128 chars) during setup")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin password must be between 8 and 128 characters."})
 			return
 		}
 		created, recoveryKey, err := CreateInitialAdmin(username, body.Password, recoveryEmail)
 		if err != nil {
+			LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Administrator setup conflict: "+err.Error())
 			writeJSON(w, 409, map[string]any{"ok": false, "error": "Administrator setup already completed. Please sign in."})
 			return
 		}
 		token := CreateAdminSessionToken(created.Username)
 		pub, _ := GetPublicSettings()
+		LogSystemAudit("AUTH", created.Username, ip, "ADMIN_SETUP", defaultStr(created.RecoveryEmail, ip), "", "ADMIN_CREATED", "Initial administrator account created and signed in")
 		writeJSON(w, 201, map[string]any{
 			"ok":            true,
 			"token":         token,
@@ -748,9 +1025,11 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		ip := ClientIP(r)
-		allowed, retryAfter := CheckLoginRateLimit(ip)
+		rateIP := ClientIP(r)
+		auditIP := RealClientIP(r)
+		allowed, retryAfter := CheckLoginRateLimit(rateIP)
 		if !allowed {
+			LogSystemAudit("AUTH", "Unknown", auditIP, "LOGIN", auditIP, "", "LOGIN_BLOCKED", fmt.Sprintf("Login temporarily blocked after too many failed attempts (retry in %ds)", retryAfter))
 			writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Too many failed login attempts. Try again in %d seconds.", retryAfter)})
 			return
 		}
@@ -759,37 +1038,43 @@ func main() {
 			Password string `json:"password"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			LogSystemAudit("AUTH", "Unknown", auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", "Invalid JSON payload on login attempt")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
+		attemptedUser := defaultStr(strings.TrimSpace(body.Username), "unknown")
 
 		envPasscode := strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE"))
 		if envPasscode != "" {
 			if body.Password == "" || !VerifyTimingSafeString(body.Password, envPasscode) {
-				RecordFailedLogin(ip)
+				RecordFailedLogin(rateIP)
+				LogSystemAudit("AUTH", attemptedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", fmt.Sprintf("Failed administrator sign-in attempt for %q (invalid passcode)", attemptedUser))
 				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid administrator credentials."})
 				return
 			}
-			ClearFailedLogins(ip)
+			ClearFailedLogins(rateIP)
 			user := defaultStr(strings.TrimSpace(body.Username), "admin")
 			token := CreateAdminSessionToken(user)
 			pub, _ := GetPublicSettings()
+			LogSystemAudit("AUTH", user, auditIP, "LOGIN", auditIP, "", "LOGIN_SUCCESS", fmt.Sprintf("Administrator %q signed in", user))
 			writeJSON(w, 200, map[string]any{"ok": true, "token": token, "username": user, "settings": pub})
 			return
 		}
 
 		if !HasAdminAccount() {
+			LogSystemAudit("AUTH", attemptedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", "Sign-in attempted before initial administrator setup was completed")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "No administrator account exists yet. Complete initial admin setup first."})
 			return
 		}
 
 		ok, matchedUser := VerifyStoredAdminCredentials(body.Username, body.Password)
 		if !ok {
-			RecordFailedLogin(ip)
+			RecordFailedLogin(rateIP)
+			LogSystemAudit("AUTH", attemptedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", fmt.Sprintf("Failed administrator sign-in attempt for username %q (invalid username or password)", attemptedUser))
 			writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid username or password."})
 			return
 		}
-		ClearFailedLogins(ip)
+		ClearFailedLogins(rateIP)
 		token := CreateAdminSessionToken(matchedUser)
 		pub, _ := GetPublicSettings()
 		acc, _ := GetAdminAccount()
@@ -797,6 +1082,7 @@ func main() {
 		if acc != nil {
 			recEmail = acc.RecoveryEmail
 		}
+		LogSystemAudit("AUTH", matchedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_SUCCESS", fmt.Sprintf("Administrator %q signed in", matchedUser))
 		writeJSON(w, 200, map[string]any{
 			"ok":            true,
 			"token":         token,
@@ -811,13 +1097,16 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		rateIP := ClientIP(r)
+		auditIP := RealClientIP(r)
 		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", "Password recovery unavailable while managed passcode override is active")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Server passcode is managed via NSSF_ADMIN_PASSCODE environment variable."})
 			return
 		}
-		ip := ClientIP(r)
-		allowed, retryAfter := CheckLoginRateLimit(ip)
+		allowed, retryAfter := CheckLoginRateLimit(rateIP)
 		if !allowed {
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", fmt.Sprintf("Password recovery rate-limited (retry in %ds)", retryAfter))
 			writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Too many recovery requests. Try again in %d seconds.", retryAfter)})
 			return
 		}
@@ -826,12 +1115,14 @@ func main() {
 			RecoveryEmail string `json:"recoveryEmail"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", "Invalid JSON body on password recovery request")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
 		username := strings.TrimSpace(body.Username)
 		recoveryEmail := strings.TrimSpace(body.RecoveryEmail)
 		if username == "" || !emailRe.MatchString(recoveryEmail) {
+			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", "Password recovery requested with missing username or invalid email")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter both your administrator username and recovery email address."})
 			return
 		}
@@ -848,6 +1139,7 @@ func main() {
 			strings.TrimSpace(cfg.SMTPUser) != "" {
 			code, cooldownSec, ok := CreatePasswordResetCode()
 			if !ok {
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", fmt.Sprintf("Reset code request throttled (%ds cooldown remaining)", cooldownSec))
 				writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Please wait %d seconds before requesting another reset code.", cooldownSec)})
 				return
 			}
@@ -862,9 +1154,13 @@ func main() {
 			)
 			if err := SendPlainTextEmail(cfg, acc.RecoveryEmail, subject, emailBody); err != nil {
 				log.Printf("[AUTH] Failed to send admin reset email: %v", err)
+				LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", acc.RecoveryEmail, "", "RESET_EMAIL_FAILED", "Failed to send password reset email: "+err.Error())
 				writeJSON(w, 502, map[string]any{"ok": false, "error": "Failed to deliver verification code via SMTP. Use your Backup Recovery Key instead."})
 				return
 			}
+			LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", acc.RecoveryEmail, "", "RESET_CODE_SENT", "Password reset verification code emailed to administrator recovery address")
+		} else {
+			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", "Password reset requested with unmatched username/recovery email or unconfigured SMTP")
 		}
 
 		writeJSON(w, 200, map[string]any{"ok": true, "message": genericMsg})
@@ -875,13 +1171,16 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		rateIP := ClientIP(r)
+		auditIP := RealClientIP(r)
 		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset blocked while managed passcode override is active")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Server passcode is managed via NSSF_ADMIN_PASSCODE environment variable."})
 			return
 		}
-		ip := ClientIP(r)
-		allowed, retryAfter := CheckLoginRateLimit(ip)
+		allowed, retryAfter := CheckLoginRateLimit(rateIP)
 		if !allowed {
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Password reset rate-limited (retry in %ds)", retryAfter))
 			writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Too many failed attempts. Try again in %d seconds.", retryAfter)})
 			return
 		}
@@ -893,54 +1192,66 @@ func main() {
 			NewPassword string `json:"newPassword"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Invalid JSON payload on password reset")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
 		username := strings.TrimSpace(body.Username)
 		if !usernameRe.MatchString(username) {
+			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset rejected due to invalid username format")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid administrator username."})
 			return
 		}
 		if len(body.NewPassword) < 8 || len(body.NewPassword) > 128 {
+			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset rejected: new password outside 8-128 character range")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
 			return
 		}
 		acc, _ := GetAdminAccount()
 		if acc == nil {
+			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset attempted when no administrator account exists")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "No administrator account exists yet."})
 			return
 		}
 
 		method := strings.TrimSpace(body.Method)
+		methodLabel := "email verification code"
 		if method == "email_code" {
 			if !strings.EqualFold(acc.Username, username) {
-				RecordFailedLogin(ip)
+				RecordFailedLogin(rateIP)
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Email-code password reset failed for unknown username %q", username))
 				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid username or verification code."})
 				return
 			}
 			ok, msg := VerifyAndConsumePasswordResetCode(body.Code)
 			if !ok {
-				RecordFailedLogin(ip)
+				RecordFailedLogin(rateIP)
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Email verification code rejected: "+msg)
 				writeJSON(w, 401, map[string]any{"ok": false, "error": msg})
 				return
 			}
 		} else if method == "recovery_key" {
+			methodLabel = "backup recovery key"
 			if !VerifyAdminRecoveryKey(username, body.RecoveryKey) {
-				RecordFailedLogin(ip)
+				RecordFailedLogin(rateIP)
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Backup recovery key rejected for username %q", username))
 				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid administrator username or backup recovery key."})
 				return
 			}
 		} else {
+			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Unsupported password reset method: "+method)
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid password reset method."})
 			return
 		}
 
 		if err := UpdateAdminPassword(body.NewPassword); err != nil {
+			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "ERROR", "Failed saving updated administrator password: "+err.Error())
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to update administrator password."})
 			return
 		}
-		ClearFailedLogins(ip)
+		ClearFailedLogins(rateIP)
 		RevokeAllAdminSessions()
+		LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET", fmt.Sprintf("Administrator password reset via %s; all active sessions revoked", methodLabel))
 		writeJSON(w, 200, map[string]any{
 			"ok":      true,
 			"message": "Administrator password updated. Sign in with your new password.",
@@ -952,7 +1263,9 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Credential update blocked while managed passcode override is active")
 			writeJSON(w, 409, map[string]any{"ok": false, "error": "Credentials are controlled by the NSSF_ADMIN_PASSCODE environment variable."})
 			return
 		}
@@ -963,15 +1276,18 @@ func main() {
 			NewPassword     string `json:"newPassword"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Invalid JSON body when updating credentials")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
 		acc, _ := GetAdminAccount()
 		if acc == nil {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Administrator account not found")
 			writeJSON(w, 404, map[string]any{"ok": false, "error": "Administrator account not found."})
 			return
 		}
 		if body.CurrentPassword == "" || !VerifyPasswordHash(body.CurrentPassword, acc.PasswordHash, acc.PasswordSalt) {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: current password was incorrect")
 			writeJSON(w, 401, map[string]any{"ok": false, "error": "Current password is incorrect."})
 			return
 		}
@@ -980,26 +1296,44 @@ func main() {
 			newUser = acc.Username
 		}
 		if !usernameRe.MatchString(newUser) {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: invalid username format")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
 			return
 		}
 		recEmail := strings.TrimSpace(body.RecoveryEmail)
 		if recEmail != "" && !emailRe.MatchString(recEmail) {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", recEmail, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: invalid recovery email")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid recovery email address."})
 			return
 		}
 		if body.NewPassword != "" && (len(body.NewPassword) < 8 || len(body.NewPassword) > 128) {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: new password outside 8-128 character range")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
 			return
 		}
 
 		updated, err := UpdateAdminCredentials(newUser, recEmail, body.NewPassword)
 		if err != nil {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "ERROR", "Failed to save updated administrator credentials: "+err.Error())
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to update administrator credentials."})
 			return
 		}
+		var changedParts []string
+		if !strings.EqualFold(acc.Username, updated.Username) {
+			changedParts = append(changedParts, fmt.Sprintf("username (%s -> %s)", acc.Username, updated.Username))
+		}
+		if acc.RecoveryEmail != updated.RecoveryEmail {
+			changedParts = append(changedParts, "recovery email")
+		}
+		if body.NewPassword != "" {
+			changedParts = append(changedParts, "password")
+		}
+		if len(changedParts) == 0 {
+			changedParts = append(changedParts, "account profile confirmed")
+		}
 		RevokeAllAdminSessions()
 		newToken := CreateAdminSessionToken(updated.Username)
+		LogSystemAudit("AUTH", updated.Username, ip, "SECURITY", defaultStr(updated.RecoveryEmail, ip), "", "CREDENTIALS_UPDATED", "Updated administrator "+strings.Join(changedParts, ", "))
 		writeJSON(w, 200, map[string]any{
 			"ok":            true,
 			"token":         newToken,
@@ -1009,12 +1343,14 @@ func main() {
 		})
 	}))
 
-	mux.HandleFunc("/api/auth/regenerate-recovery-key", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+	mux.HandleFunc("/api/auth/regenerate-recovery-key", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
+			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "RECOVERY_KEY_FAILED", "Recovery key regeneration unavailable while managed passcode override is active")
 			writeJSON(w, 409, map[string]any{"ok": false, "error": "Recovery key is unavailable while NSSF_ADMIN_PASSCODE is active."})
 			return
 		}
@@ -1022,19 +1358,23 @@ func main() {
 			CurrentPassword string `json:"currentPassword"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "RECOVERY_KEY_FAILED", "Invalid JSON body during recovery key regeneration")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
 		acc, _ := GetAdminAccount()
 		if acc == nil || body.CurrentPassword == "" || !VerifyPasswordHash(body.CurrentPassword, acc.PasswordHash, acc.PasswordSalt) {
+			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "RECOVERY_KEY_FAILED", "Rejected recovery key regeneration: incorrect current password")
 			writeJSON(w, 401, map[string]any{"ok": false, "error": "Current password is incorrect."})
 			return
 		}
 		recKey, err := RegenerateAdminRecoveryKey()
 		if err != nil {
+			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "ERROR", "Failed regenerating backup recovery key: "+err.Error())
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to regenerate backup recovery key."})
 			return
 		}
+		LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "RECOVERY_KEY_REGENERATED", "Generated a new administrator backup recovery key")
 		writeJSON(w, 200, map[string]any{
 			"ok":          true,
 			"recoveryKey": recKey,
@@ -1042,7 +1382,11 @@ func main() {
 	}))
 
 	mux.HandleFunc("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
-		RevokeAdminSessionToken(ExtractBearerToken(r))
+		revoked, username := RevokeAdminSessionToken(ExtractBearerToken(r))
+		if revoked {
+			ip := RealClientIP(r)
+			LogSystemAudit("AUTH", defaultStr(username, "Admin"), ip, "LOGIN", ip, "", "LOGOUT", "Administrator signed out / locked System Settings")
+		}
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 
@@ -1058,24 +1402,32 @@ func main() {
 			return
 		}
 		if r.Method == http.MethodPost {
-			valid, _ := VerifyAdminSessionToken(ExtractBearerToken(r))
+			ip := RealClientIP(r)
+			valid, actor := VerifyAdminSessionToken(ExtractBearerToken(r))
 			if !valid {
+				LogSystemAudit("AUTH", "Anonymous", ip, "SECURITY", "POST /api/settings", "", "UNAUTHORIZED", "Blocked unauthenticated attempt to modify System Settings")
 				writeJSON(w, 401, map[string]any{"ok": false, "error": "Administrator authentication is required to access System Settings."})
 				return
 			}
 			var cfg AppSettings
 			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				LogSystemAudit("SETTINGS", actor, ip, "SETTINGS", ip, "", "SETTINGS_UPDATE_FAILED", "Invalid JSON settings payload: "+err.Error())
 				writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
 				return
 			}
+			prevCfg, _ := GetRawSettings()
 			if err := SaveSettings(cfg); err != nil {
 				statusCode := 500
 				if strings.Contains(err.Error(), "update repository") {
 					statusCode = 400
 				}
+				LogSystemAudit("SETTINGS", actor, ip, "SETTINGS", ip, "", "SETTINGS_UPDATE_FAILED", "Failed saving settings: "+err.Error())
 				writeJSON(w, statusCode, map[string]any{"ok": false, "error": err.Error()})
 				return
 			}
+			updatedRaw, _ := GetRawSettings()
+			diffSummary := summarizeSettingsDiff(prevCfg, updatedRaw, cfg.ClearSMTPPass, cfg.SMTPPass != "")
+			LogSystemAudit("SETTINGS", actor, ip, "SETTINGS", "System Configuration", "", "SETTINGS_UPDATED", diffSummary)
 			updated, _ := GetPublicSettings()
 			writeJSON(w, 200, map[string]any{"ok": true, "settings": updated})
 			return
@@ -1083,11 +1435,12 @@ func main() {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	})
 
-	mux.HandleFunc("/api/settings/test-smtp", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+	mux.HandleFunc("/api/settings/test-smtp", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		current, _ := GetRawSettings()
 		var override AppSettings
 		_ = json.NewDecoder(r.Body).Decode(&override)
@@ -1106,10 +1459,13 @@ func main() {
 		if override.SMTPPass != "" {
 			current.SMTPPass = override.SMTPPass
 		}
+		target := strings.TrimSpace(current.SMTPHost) + ":" + strings.TrimSpace(current.SMTPPort)
 		if err := TestSMTPConnection(current); err != nil {
+			LogSystemAudit("SETTINGS", actor, ip, "EMAIL", target, "", "SMTP_TEST_FAILED", err.Error())
 			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
+		LogSystemAudit("SETTINGS", actor, ip, "EMAIL", target, "", "SMTP_TEST_OK", fmt.Sprintf("SMTP handshake & authentication succeeded with %s", target))
 		writeJSON(w, 200, map[string]any{"ok": true, "message": fmt.Sprintf("Authenticated successfully with %s:%s", current.SMTPHost, current.SMTPPort)})
 	}))
 
@@ -1154,13 +1510,19 @@ func main() {
 		})
 	}))
 
-	mux.HandleFunc("/api/whatsapp/reconnect", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+	mux.HandleFunc("/api/whatsapp/reconnect", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		ip := RealClientIP(r)
 		cfg, _ := GetRawSettings()
 		qrData := ReconnectWhatsApp(cfg)
+		if qrData.Error != "" {
+			LogSystemAudit("WHATSAPP", actor, ip, "WHATSAPP", qrData.DeviceName, "", "WHATSAPP_ERROR", qrData.Error)
+		} else if qrData.Connected {
+			LogSystemAudit("WHATSAPP", actor, ip, "WHATSAPP", defaultStr("+"+strings.TrimPrefix(qrData.PairedPhone, "+"), qrData.DeviceName), "", "WHATSAPP_RECONNECTED", "WhatsApp gateway session reconnected")
+		}
 		pub, _ := GetPublicSettings()
 		writeJSON(w, 200, map[string]any{
 			"ok":       true,
@@ -1187,9 +1549,11 @@ func main() {
 		writeJSON(w, 200, map[string]any{"ok": true, "qrData": updated, "settings": pub})
 	}))
 
-	mux.HandleFunc("/api/whatsapp/unlink", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, _ string) {
+	mux.HandleFunc("/api/whatsapp/unlink", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
+		ip := RealClientIP(r)
 		cfg, _ := GetRawSettings()
 		qrData := UnlinkWhatsAppSession(cfg)
+		LogSystemAudit("WHATSAPP", actor, ip, "WHATSAPP", "WhatsApp Gateway", cfg.WhatsAppDeviceName, "WHATSAPP_UNLINKED", "WhatsApp gateway device unlinked by administrator")
 		pub, _ := GetPublicSettings()
 		writeJSON(w, 200, map[string]any{"ok": true, "qrData": qrData, "settings": pub})
 	}))
@@ -1312,6 +1676,62 @@ func (lrw *loggingResponseWriter) Unwrap() http.ResponseWriter {
 	return lrw.ResponseWriter
 }
 
+func summarizeSettingsDiff(prev, next AppSettings, clearedPass, updatedPass bool) string {
+	var changes []string
+	if prev.SMTPHost != next.SMTPHost || prev.SMTPPort != next.SMTPPort || prev.SMTPSecurity != next.SMTPSecurity || prev.SMTPUser != next.SMTPUser || prev.SMTPFrom != next.SMTPFrom {
+		changes = append(changes, "SMTP configuration")
+	}
+	if clearedPass {
+		changes = append(changes, "SMTP password cleared")
+	} else if updatedPass {
+		changes = append(changes, "SMTP password updated")
+	}
+	if prev.EmailEnabled != next.EmailEnabled {
+		if next.EmailEnabled {
+			changes = append(changes, "Email channel enabled")
+		} else {
+			changes = append(changes, "Email channel disabled")
+		}
+	}
+	if prev.WhatsAppEnabled != next.WhatsAppEnabled {
+		if next.WhatsAppEnabled {
+			changes = append(changes, "WhatsApp channel enabled")
+		} else {
+			changes = append(changes, "WhatsApp channel disabled")
+		}
+	}
+	if prev.WhatsAppDeviceName != next.WhatsAppDeviceName {
+		changes = append(changes, "WhatsApp terminal name")
+	}
+	if prev.FilenameTemplate != next.FilenameTemplate || prev.PasswordMode != next.PasswordMode || prev.PortalURL != next.PortalURL {
+		changes = append(changes, "Document & security defaults")
+	}
+	if prev.PreviewBeforeDispatch != next.PreviewBeforeDispatch {
+		if next.PreviewBeforeDispatch {
+			changes = append(changes, "Pre-dispatch confirmation enabled")
+		} else {
+			changes = append(changes, "Pre-dispatch confirmation disabled")
+		}
+	}
+	if prev.EmailSubjectTemplate != next.EmailSubjectTemplate || prev.WhatsAppMessageTemplate != next.WhatsAppMessageTemplate {
+		changes = append(changes, "Message templates")
+	}
+	if prev.AutoUpdateEnabled != next.AutoUpdateEnabled {
+		if next.AutoUpdateEnabled {
+			changes = append(changes, "Automatic updates enabled")
+		} else {
+			changes = append(changes, "Automatic updates disabled")
+		}
+	}
+	if prev.UpdateRepo != next.UpdateRepo {
+		changes = append(changes, "Update repository")
+	}
+	if len(changes) == 0 {
+		return "Saved system configuration"
+	}
+	return "Updated: " + strings.Join(changes, ", ")
+}
+
 func requestLoggerMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -1320,17 +1740,26 @@ func requestLoggerMiddleware(next http.Handler) http.Handler {
 			statusCode:     http.StatusOK,
 		}
 
+		ip := RealClientIP(r)
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[ERROR] Panic handling %s %s: %v", r.Method, r.URL.Path, rec)
+				LogSystemAudit("SYSTEM", "System", ip, "SYSTEM", r.Method+" "+r.URL.Path, "", "SYSTEM_ERROR", fmt.Sprintf("Unexpected server error: %v", rec))
+				if !lrw.wroteHeader {
+					writeJSON(lrw, http.StatusInternalServerError, map[string]any{
+						"ok":    false,
+						"error": "An unexpected internal server error occurred.",
+					})
+				}
+			}
+		}()
+
 		next.ServeHTTP(lrw, r)
 
 		duration := time.Since(start).Round(100 * time.Microsecond)
 		target := r.URL.Path
 		if r.URL.RawQuery != "" {
 			target += "?" + r.URL.RawQuery
-		}
-
-		ip := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
-		if ip == "" {
-			ip = ClientIP(r)
 		}
 
 		kind := "HTTP"

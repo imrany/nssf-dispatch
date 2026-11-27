@@ -100,6 +100,7 @@ func GenerateQRSvg(payload string) string {
 func InitWhatsApp(cfg AppSettings) {
 	if err := waManager.ensureInitialized(cfg); err != nil {
 		log.Printf("[WHATSAPP] Initialization deferred: %v", err)
+		LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", "", "WHATSAPP_ERROR", "WhatsApp initialization deferred: "+err.Error())
 	}
 }
 
@@ -193,6 +194,7 @@ func (m *whatsAppManager) ensureInitialized(cfg AppSettings) error {
 				m.mu.Lock()
 				m.lastError = err.Error()
 				m.mu.Unlock()
+				LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "+"+pairedPhone, deviceLabel, "WHATSAPP_ERROR", "WhatsApp auto-connect failed: "+err.Error())
 			}
 		}()
 	} else {
@@ -264,6 +266,7 @@ func (m *whatsAppManager) handlePaired(phone string) {
 
 	_, _ = SaveWhatsAppSession(rec)
 	log.Printf("[WHATSAPP] Paired device +%s (%s)", rec.PairedPhone, rec.DeviceName)
+	LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "+"+rec.PairedPhone, rec.DeviceName, "WHATSAPP_PAIRED", fmt.Sprintf("WhatsApp gateway device paired (+%s · %s)", rec.PairedPhone, rec.DeviceName))
 }
 
 func (m *whatsAppManager) handleConnected(phone string) {
@@ -340,6 +343,7 @@ func (m *whatsAppManager) handleLoggedOut(reason string) {
 	}
 	_, _ = SaveWhatsAppSession(rec)
 	log.Printf("[WHATSAPP] %s", reason)
+	LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", deviceLabel, "WHATSAPP_LOGGED_OUT", reason)
 }
 
 func (m *whatsAppManager) snapshot(cfg AppSettings) WhatsAppQRResponse {
@@ -432,14 +436,16 @@ func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
 
 	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
+		errMsg := fmt.Sprintf("Failed to prepare WhatsApp device store: %v", err)
 		waManager.mu.Lock()
 		waManager.qrLoopActive = false
-		waManager.lastError = fmt.Sprintf("Failed to prepare WhatsApp device store: %v", err)
+		waManager.lastError = errMsg
 		if waManager.firstQRCh == readyCh {
 			close(readyCh)
 			waManager.firstQRCh = nil
 		}
 		waManager.mu.Unlock()
+		LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", deviceLabel, "WHATSAPP_ERROR", errMsg)
 		return waManager.snapshot(cfg)
 	}
 
@@ -454,27 +460,31 @@ func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
 	qrChan, err := freshClient.GetQRChannel(qrCtx)
 	if err != nil {
 		qrCancel()
+		errMsg := fmt.Sprintf("Failed to open WhatsApp QR channel: %v", err)
 		waManager.mu.Lock()
 		waManager.qrLoopActive = false
-		waManager.lastError = fmt.Sprintf("Failed to open WhatsApp QR channel: %v", err)
+		waManager.lastError = errMsg
 		if waManager.firstQRCh == readyCh {
 			close(readyCh)
 			waManager.firstQRCh = nil
 		}
 		waManager.mu.Unlock()
+		LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", deviceLabel, "WHATSAPP_ERROR", errMsg)
 		return waManager.snapshot(cfg)
 	}
 
 	if err := freshClient.Connect(); err != nil {
 		qrCancel()
+		errMsg := fmt.Sprintf("WhatsApp Web connection failed: %v", err)
 		waManager.mu.Lock()
 		waManager.qrLoopActive = false
-		waManager.lastError = fmt.Sprintf("WhatsApp Web connection failed: %v", err)
+		waManager.lastError = errMsg
 		if waManager.firstQRCh == readyCh {
 			close(readyCh)
 			waManager.firstQRCh = nil
 		}
 		waManager.mu.Unlock()
+		LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", deviceLabel, "WHATSAPP_ERROR", errMsg)
 		return waManager.snapshot(cfg)
 	}
 
@@ -520,26 +530,37 @@ func FetchWhatsAppQR(cfg AppSettings, forceRefresh bool) WhatsAppQRResponse {
 				return
 
 			case "timeout":
+				var timeoutErr string
 				waManager.mu.Lock()
 				waManager.qrLoopActive = false
 				waManager.qrPayload = ""
 				waManager.qrSvg = ""
 				if !waManager.paired {
-					waManager.lastError = "WhatsApp QR code timed out before scanning. Click Refresh QR to generate a new code."
+					timeoutErr = "WhatsApp QR code timed out before scanning. Click Refresh QR to generate a new code."
+					waManager.lastError = timeoutErr
 				}
 				waManager.mu.Unlock()
+				if timeoutErr != "" {
+					LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", label, "WHATSAPP_ERROR", timeoutErr)
+				}
 				signalReady()
 				return
 
 			default:
+				var evtErr string
 				waManager.mu.Lock()
 				waManager.qrLoopActive = false
 				if evt.Error != nil {
-					waManager.lastError = fmt.Sprintf("WhatsApp pairing error: %v", evt.Error)
+					evtErr = fmt.Sprintf("WhatsApp pairing error: %v", evt.Error)
+					waManager.lastError = evtErr
 				} else if evt.Event != "" && !waManager.paired {
-					waManager.lastError = fmt.Sprintf("WhatsApp pairing ended: %s", evt.Event)
+					evtErr = fmt.Sprintf("WhatsApp pairing ended: %s", evt.Event)
+					waManager.lastError = evtErr
 				}
 				waManager.mu.Unlock()
+				if evtErr != "" {
+					LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", label, "WHATSAPP_ERROR", evtErr)
+				}
 				signalReady()
 			}
 		}
@@ -574,9 +595,11 @@ func ReconnectWhatsApp(cfg AppSettings) WhatsAppQRResponse {
 
 	if !client.IsConnected() {
 		if err := client.Connect(); err != nil {
+			errMsg := fmt.Sprintf("Reconnect failed: %v", err)
 			waManager.mu.Lock()
-			waManager.lastError = fmt.Sprintf("Reconnect failed: %v", err)
+			waManager.lastError = errMsg
 			waManager.mu.Unlock()
+			LogSystemAudit("WHATSAPP", "System", "", "WHATSAPP", "WhatsApp Gateway", cfg.WhatsAppDeviceName, "WHATSAPP_ERROR", errMsg)
 		} else {
 			client.WaitForConnection(5 * time.Second)
 		}

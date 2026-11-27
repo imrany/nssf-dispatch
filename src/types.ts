@@ -133,6 +133,9 @@ export interface WhatsAppQrData {
 export interface AuditLog {
   id: number;
   timestamp: string;
+  eventType?: string;
+  actor?: string;
+  sourceIp?: string;
   memberNo: string;
   memberName: string;
   channel: string;

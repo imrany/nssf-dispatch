@@ -195,23 +195,29 @@ func VerifyAdminSessionToken(token string) (bool, string) {
 	return true, entry.username
 }
 
-func RevokeAdminSessionToken(token string) {
+func RevokeAdminSessionToken(token string) (bool, string) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 {
-		return
+		return false, ""
 	}
 	rawPayload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return
+		return false, ""
 	}
 	var parsed struct {
 		Jti string `json:"jti"`
+		Sub string `json:"sub"`
 	}
 	if json.Unmarshal(rawPayload, &parsed) == nil && parsed.Jti != "" {
 		authMu.Lock()
+		entry, ok := activeSessions[parsed.Jti]
 		delete(activeSessions, parsed.Jti)
 		authMu.Unlock()
+		if ok {
+			return true, defaultStr(entry.username, parsed.Sub)
+		}
 	}
+	return false, ""
 }
 
 func RevokeAllAdminSessions() {
@@ -312,6 +318,7 @@ func RequireAdminAuth(next func(http.ResponseWriter, *http.Request, string)) htt
 	return func(w http.ResponseWriter, r *http.Request) {
 		ok, username := VerifyAdminSessionToken(ExtractBearerToken(r))
 		if !ok {
+			LogSystemAudit("AUTH", "Anonymous", RealClientIP(r), "SECURITY", r.Method+" "+r.URL.Path, "", "UNAUTHORIZED", "Blocked unauthenticated access attempt to protected route "+r.URL.Path)
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"ok":    false,
 				"error": "Administrator authentication is required to access System Settings.",
@@ -331,6 +338,16 @@ func ClientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return "unknown"
+}
+
+func RealClientIP(r *http.Request) string {
+	if xff := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); xff != "" {
+		return xff
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	return ClientIP(r)
 }
 
 func CheckLoginRateLimit(ip string) (bool, int) {

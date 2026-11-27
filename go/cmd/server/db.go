@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +61,9 @@ type WhatsAppSessionRecord struct {
 type AuditLog struct {
 	ID          int    `json:"id"`
 	Timestamp   string `json:"timestamp"`
+	EventType   string `json:"eventType"`
+	Actor       string `json:"actor"`
+	SourceIP    string `json:"sourceIp"`
 	MemberNo    string `json:"memberNo"`
 	MemberName  string `json:"memberName"`
 	Channel     string `json:"channel"`
@@ -67,6 +71,19 @@ type AuditLog struct {
 	RenamedFile string `json:"renamedFile"`
 	Status      string `json:"status"`
 	Details     string `json:"details"`
+}
+
+type AuditEvent struct {
+	EventType   string
+	Actor       string
+	SourceIP    string
+	MemberNo    string
+	MemberName  string
+	Channel     string
+	Destination string
+	RenamedFile string
+	Status      string
+	Details     string
 }
 
 type AdminAccount struct {
@@ -371,6 +388,9 @@ func InitDB() error {
 	CREATE TABLE IF NOT EXISTS audit_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		timestamp TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+		event_type TEXT NOT NULL DEFAULT 'DISPATCH',
+		actor TEXT NOT NULL DEFAULT 'Service Desk',
+		source_ip TEXT NOT NULL DEFAULT '',
 		member_no TEXT NOT NULL,
 		member_name TEXT NOT NULL,
 		channel TEXT NOT NULL,
@@ -406,6 +426,33 @@ func InitDB() error {
 		}
 		for _, m := range migrations {
 			if !existing[m.col] {
+				if _, migErr := runSQL(m.ddl); migErr != nil {
+					return migErr
+				}
+			}
+		}
+	}
+
+	// Migrate pre-existing audit_logs tables smoothly without dropping compliance records.
+	auditColsRaw, auditColsErr := runSQL("SELECT name FROM pragma_table_info('audit_logs');")
+	if auditColsErr == nil {
+		existingAudit := map[string]bool{}
+		for _, line := range strings.Split(auditColsRaw, "\n") {
+			name := strings.TrimSpace(line)
+			if name != "" {
+				existingAudit[name] = true
+			}
+		}
+		auditMigrations := []struct {
+			col string
+			ddl string
+		}{
+			{"event_type", "ALTER TABLE audit_logs ADD COLUMN event_type TEXT NOT NULL DEFAULT 'DISPATCH';"},
+			{"actor", "ALTER TABLE audit_logs ADD COLUMN actor TEXT NOT NULL DEFAULT 'Service Desk';"},
+			{"source_ip", "ALTER TABLE audit_logs ADD COLUMN source_ip TEXT NOT NULL DEFAULT '';"},
+		}
+		for _, m := range auditMigrations {
+			if !existingAudit[m.col] {
 				if _, migErr := runSQL(m.ddl); migErr != nil {
 					return migErr
 				}
@@ -664,7 +711,30 @@ func SaveWhatsAppSession(s WhatsAppSessionRecord) (*WhatsAppSessionRecord, error
 	return GetWhatsAppSession()
 }
 
-func InsertAuditLog(memberNo, memberName, channel, dest, filename, status, details string) error {
+func truncateAuditText(s string, maxRunes int) string {
+	clean := strings.TrimSpace(strings.ReplaceAll(s, "\x00", ""))
+	if maxRunes <= 0 {
+		return clean
+	}
+	runes := []rune(clean)
+	if len(runes) <= maxRunes {
+		return clean
+	}
+	return string(runes[:maxRunes-3]) + "..."
+}
+
+func InsertAuditEvent(evt AuditEvent) error {
+	eventType := defaultStr(strings.ToUpper(strings.TrimSpace(evt.EventType)), "DISPATCH")
+	actor := truncateAuditText(defaultStr(strings.TrimSpace(evt.Actor), "Service Desk"), 120)
+	sourceIP := truncateAuditText(evt.SourceIP, 120)
+	memberNo := truncateAuditText(evt.MemberNo, 120)
+	memberName := truncateAuditText(evt.MemberName, 160)
+	channel := truncateAuditText(strings.ToUpper(strings.TrimSpace(evt.Channel)), 60)
+	dest := truncateAuditText(evt.Destination, 240)
+	filename := truncateAuditText(evt.RenamedFile, 240)
+	status := truncateAuditText(strings.ToUpper(strings.TrimSpace(evt.Status)), 80)
+	details := truncateAuditText(evt.Details, 1000)
+
 	if !hasSQLiteCLI() {
 		dbMu.Lock()
 		defer dbMu.Unlock()
@@ -672,6 +742,9 @@ func InsertAuditLog(memberNo, memberName, channel, dest, filename, status, detai
 		entry := AuditLog{
 			ID:          fallbackState.NextAuditID,
 			Timestamp:   time.Now().Format("2006-01-02 15:04:05"),
+			EventType:   eventType,
+			Actor:       actor,
+			SourceIP:    sourceIP,
 			MemberNo:    memberNo,
 			MemberName:  memberName,
 			Channel:     channel,
@@ -682,19 +755,49 @@ func InsertAuditLog(memberNo, memberName, channel, dest, filename, status, detai
 		}
 		fallbackState.NextAuditID++
 		fallbackState.AuditLogs = append([]AuditLog{entry}, fallbackState.AuditLogs...)
-		if len(fallbackState.AuditLogs) > 300 {
-			fallbackState.AuditLogs = fallbackState.AuditLogs[:300]
+		if len(fallbackState.AuditLogs) > 1000 {
+			fallbackState.AuditLogs = fallbackState.AuditLogs[:1000]
 		}
 		return saveFallbackLocked()
 	}
 
 	q := fmt.Sprintf(
-		`INSERT INTO audit_logs (member_no, member_name, channel, destination, renamed_file, status, details)
-		 VALUES (%s, %s, %s, %s, %s, %s, %s);`,
+		`INSERT INTO audit_logs (event_type, actor, source_ip, member_no, member_name, channel, destination, renamed_file, status, details)
+		 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);`,
+		sqlLit(eventType), sqlLit(actor), sqlLit(sourceIP),
 		sqlLit(memberNo), sqlLit(memberName), sqlLit(channel), sqlLit(dest), sqlLit(filename), sqlLit(status), sqlLit(details),
 	)
 	_, err := runSQL(q)
 	return err
+}
+
+func InsertAuditLog(memberNo, memberName, channel, dest, filename, status, details string) error {
+	return InsertAuditEvent(AuditEvent{
+		EventType:   "DISPATCH",
+		Actor:       "Service Desk",
+		MemberNo:    memberNo,
+		MemberName:  memberName,
+		Channel:     channel,
+		Destination: dest,
+		RenamedFile: filename,
+		Status:      status,
+		Details:     details,
+	})
+}
+
+func LogSystemAudit(eventType, actor, sourceIP, channel, target, resource, status, details string) {
+	if err := InsertAuditEvent(AuditEvent{
+		EventType:   eventType,
+		Actor:       actor,
+		SourceIP:    sourceIP,
+		Channel:     channel,
+		Destination: target,
+		RenamedFile: resource,
+		Status:      status,
+		Details:     details,
+	}); err != nil {
+		log.Printf("[AUDIT] Failed to persist audit record (%s/%s): %v", eventType, status, err)
+	}
 }
 
 func GetAuditLogs() ([]AuditLog, error) {
@@ -702,36 +805,49 @@ func GetAuditLogs() ([]AuditLog, error) {
 		dbMu.Lock()
 		defer dbMu.Unlock()
 		loadFallbackLocked()
-		out := make([]AuditLog, 0, len(fallbackState.AuditLogs))
 		limit := len(fallbackState.AuditLogs)
-		if limit > 150 {
-			limit = 150
+		if limit > 500 {
+			limit = 500
 		}
-		out = append(out, fallbackState.AuditLogs[:limit]...)
+		out := make([]AuditLog, 0, limit)
+		for _, entry := range fallbackState.AuditLogs[:limit] {
+			if entry.EventType == "" {
+				entry.EventType = "DISPATCH"
+			}
+			if entry.Actor == "" {
+				entry.Actor = "Service Desk"
+			}
+			out = append(out, entry)
+		}
 		return out, nil
 	}
 
-	raw, err := runSQL(`SELECT id, hex(COALESCE(timestamp, '')), hex(COALESCE(member_no, '')), hex(COALESCE(member_name, '')),
+	raw, err := runSQL(`SELECT id, hex(COALESCE(timestamp, '')), hex(COALESCE(NULLIF(event_type, ''), 'DISPATCH')),
+		hex(COALESCE(NULLIF(actor, ''), 'Service Desk')), hex(COALESCE(source_ip, '')),
+		hex(COALESCE(member_no, '')), hex(COALESCE(member_name, '')),
 		hex(COALESCE(channel, '')), hex(COALESCE(destination, '')), hex(COALESCE(renamed_file, '')),
 		hex(COALESCE(status, '')), hex(COALESCE(details, ''))
-		FROM audit_logs ORDER BY id DESC LIMIT 150;`)
+		FROM audit_logs ORDER BY id DESC LIMIT 500;`)
 	if err != nil {
 		return []AuditLog{}, err
 	}
-	rows := splitPipeRows(raw, 9)
+	rows := splitPipeRows(raw, 12)
 	logs := make([]AuditLog, 0, len(rows))
 	for _, cols := range rows {
 		idVal, _ := strconv.Atoi(strings.TrimSpace(cols[0]))
 		logs = append(logs, AuditLog{
 			ID:          idVal,
 			Timestamp:   decodeHexField(cols[1]),
-			MemberNo:    decodeHexField(cols[2]),
-			MemberName:  decodeHexField(cols[3]),
-			Channel:     decodeHexField(cols[4]),
-			Destination: decodeHexField(cols[5]),
-			RenamedFile: decodeHexField(cols[6]),
-			Status:      decodeHexField(cols[7]),
-			Details:     decodeHexField(cols[8]),
+			EventType:   decodeHexField(cols[2]),
+			Actor:       decodeHexField(cols[3]),
+			SourceIP:    decodeHexField(cols[4]),
+			MemberNo:    decodeHexField(cols[5]),
+			MemberName:  decodeHexField(cols[6]),
+			Channel:     decodeHexField(cols[7]),
+			Destination: decodeHexField(cols[8]),
+			RenamedFile: decodeHexField(cols[9]),
+			Status:      decodeHexField(cols[10]),
+			Details:     decodeHexField(cols[11]),
 		})
 	}
 	return logs, nil

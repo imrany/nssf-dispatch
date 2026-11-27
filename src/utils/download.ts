@@ -339,11 +339,14 @@ export function buildAuditCsvBlob(logs: AuditLog[]): Blob {
   const headers = [
     'Log ID',
     'Timestamp',
+    'Event Type',
+    'Actor',
+    'Source IP',
     'Member No',
     'Member Name',
     'Channel',
-    'Destination',
-    'Filename',
+    'Target / Recipient',
+    'Resource / File',
     'Status',
     'Details',
   ];
@@ -354,6 +357,9 @@ export function buildAuditCsvBlob(logs: AuditLog[]): Blob {
     [
       l.id,
       l.timestamp,
+      l.eventType || 'DISPATCH',
+      l.actor || 'Service Desk',
+      l.sourceIp || '',
       l.memberNo,
       l.memberName,
       l.channel,
@@ -487,13 +493,16 @@ export function buildAuditExcelBlob(
   const headers = [
     'Log ID',
     'Timestamp',
+    'Event Type',
+    'Actor',
+    'Source IP',
     'NSSF Member No',
     'Member Name',
     'Channel',
-    'Recipient',
-    'Protected Filename',
+    'Target / Recipient',
+    'Resource / File',
     'Outcome',
-    'Compliance Details',
+    'Audit Details',
   ];
 
   const searchPart = filters.query.trim()
@@ -506,7 +515,7 @@ export function buildAuditExcelBlob(
       0,
       1,
       1,
-      `${appName} - Compliance Audit Report`
+      `${appName} - System & Compliance Audit Report`
     )}</row>`
   );
   rowsXml.push(
@@ -514,7 +523,7 @@ export function buildAuditExcelBlob(
       0,
       2,
       2,
-      `Generated: ${exportedAt} | Channel: ${filters.channel} | Outcome: ${filters.status}${searchPart} | Records: ${logs.length}`
+      `Generated: ${exportedAt} | Category: ${filters.channel} | Outcome: ${filters.status}${searchPart} | Records: ${logs.length}`
     )}</row>`
   );
   rowsXml.push(
@@ -528,18 +537,21 @@ export function buildAuditExcelBlob(
     const cells = [
       numberCell(0, rowNum, 5, Number(l.id)),
       inlineStrCell(1, rowNum, 4, sanitizeSpreadsheetCell(l.timestamp)),
-      inlineStrCell(2, rowNum, 4, sanitizeSpreadsheetCell(l.memberNo)),
-      inlineStrCell(3, rowNum, 4, sanitizeSpreadsheetCell(l.memberName)),
-      inlineStrCell(4, rowNum, 4, sanitizeSpreadsheetCell(l.channel)),
-      inlineStrCell(5, rowNum, 4, sanitizeSpreadsheetCell(l.destination)),
-      inlineStrCell(6, rowNum, 4, sanitizeSpreadsheetCell(l.renamedFile)),
-      inlineStrCell(7, rowNum, 4, sanitizeSpreadsheetCell(l.status)),
-      inlineStrCell(8, rowNum, 4, sanitizeSpreadsheetCell(l.details)),
+      inlineStrCell(2, rowNum, 4, sanitizeSpreadsheetCell(l.eventType || 'DISPATCH')),
+      inlineStrCell(3, rowNum, 4, sanitizeSpreadsheetCell(l.actor || 'Service Desk')),
+      inlineStrCell(4, rowNum, 4, sanitizeSpreadsheetCell(l.sourceIp || '')),
+      inlineStrCell(5, rowNum, 4, sanitizeSpreadsheetCell(l.memberNo)),
+      inlineStrCell(6, rowNum, 4, sanitizeSpreadsheetCell(l.memberName)),
+      inlineStrCell(7, rowNum, 4, sanitizeSpreadsheetCell(l.channel)),
+      inlineStrCell(8, rowNum, 4, sanitizeSpreadsheetCell(l.destination)),
+      inlineStrCell(9, rowNum, 4, sanitizeSpreadsheetCell(l.renamedFile)),
+      inlineStrCell(10, rowNum, 4, sanitizeSpreadsheetCell(l.status)),
+      inlineStrCell(11, rowNum, 4, sanitizeSpreadsheetCell(l.details)),
     ].join('');
     rowsXml.push(`<row r="${rowNum}">${cells}</row>`);
   });
 
-  const colWidths = [10, 22, 18, 28, 14, 28, 32, 18, 42];
+  const colWidths = [10, 22, 14, 18, 16, 18, 24, 14, 28, 30, 22, 48];
   const colsXml = colWidths
     .map((w, idx) => `<col min="${idx + 1}" max="${idx + 1}" width="${w}" customWidth="1"/>`)
     .join('');
