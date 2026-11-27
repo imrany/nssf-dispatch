@@ -45,7 +45,7 @@ export function AuditLogsView() {
         return;
       }
       setLogs([]);
-      toast.error('Failed to load audit logs', 'Unable to query SQLite audit history.');
+      toast.error('Failed to load audit logs', 'Unable to load audit history.');
     } finally {
       setLoading(false);
     }
@@ -130,7 +130,7 @@ export function AuditLogsView() {
 
       <PageHeader
         title="AUDIT LOGS"
-        subtitle="Persistent SQLite record of every statement validation, encryption, and member dispatch attempt."
+        subtitle="Complete record of every statement validation, encryption, and member dispatch attempt."
         actions={
           <>
             <ActionButton variant="outline" onClick={loadLogs}>

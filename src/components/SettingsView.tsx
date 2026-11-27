@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom';
 import {
   ClipboardList,
+  Eye,
+  EyeOff,
   Lock,
   Mail,
   RefreshCw,
@@ -76,6 +78,7 @@ export function SettingsView() {
   const [applyingUpdate, setApplyingUpdate] = useState(false);
   const [restartingApp, setRestartingApp] = useState(false);
   const [togglingFields, setTogglingFields] = useState<Record<string, boolean>>({});
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
 
   const settingsRef = useRef(settings);
   const skipNextFormSyncRef = useRef(false);
@@ -122,6 +125,7 @@ export function SettingsView() {
     setForm((prev) => {
       switch (section) {
         case 'smtp':
+          setShowSmtpPass(false);
           return {
             ...prev,
             smtpHost: settings.smtpHost,
@@ -218,7 +222,7 @@ export function SettingsView() {
         const msg =
           err instanceof Error
             ? err.message
-            : 'Could not fetch WhatsApp QR code from Go server.';
+            : 'Could not fetch WhatsApp QR code from the server.';
         setQrData((prev) => ({
           paired: prev?.paired ?? false,
           connected: false,
@@ -275,8 +279,8 @@ export function SettingsView() {
           toast.success(
             'WhatsApp device paired',
             data.pairedPhone
-              ? `Linked +${data.pairedPhone} via native whatsmeow client.`
-              : 'Linked device session confirmed and stored.'
+              ? `Linked +${data.pairedPhone} to WhatsApp.`
+              : 'Linked device session confirmed.'
           );
         } else if (!data.paired && isPaired) {
           if (data.settings) setSettings(data.settings);
@@ -309,8 +313,9 @@ export function SettingsView() {
       const data = await saveSettingsApi(token, form);
       setSettings(data.settings);
       setForm({ ...data.settings, smtpPass: '' });
+      setShowSmtpPass(false);
       void loadRuntime();
-      const msg = 'System configuration saved to SQLite database.';
+      const msg = 'System configuration saved.';
       setSaveNotice(msg);
       toast.success('Settings saved', msg);
 
@@ -373,7 +378,7 @@ export function SettingsView() {
 
         toast.success(
           `${label} ${nextValue ? 'enabled' : 'disabled'}`,
-          'Updated automatically in SQLite.'
+          'Setting updated.'
         );
 
         if (
@@ -432,7 +437,7 @@ export function SettingsView() {
       }
       await loadQr(false);
       await loadRuntime();
-      toast.success('Settings refreshed', 'Loaded latest saved configuration from SQLite.');
+      toast.success('Settings refreshed', 'Loaded latest saved configuration.');
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         logoutAdmin('expired');
@@ -490,7 +495,7 @@ export function SettingsView() {
     if (!activePendingAction) return;
     setForm({ ...settings, smtpPass: '' });
     setSettingsDirty(false);
-    toast.warning('Unsaved changes discarded', 'Reverted to last saved SQLite configuration.');
+    toast.warning('Unsaved changes discarded', 'Reverted to last saved configuration.');
     await executePendingAction(activePendingAction);
   };
 
@@ -522,7 +527,7 @@ export function SettingsView() {
       if (data.qrData) setQrData(data.qrData);
       if (data.settings) setSettings(data.settings);
       if (data.qrData?.connected) {
-        toast.success('WhatsApp connected', 'Native whatsmeow WebSocket is online.');
+        toast.success('WhatsApp connected', 'WhatsApp connection is online.');
       } else {
         toast.warning(
           'WhatsApp reconnecting',
@@ -931,16 +936,30 @@ export function SettingsView() {
 
               <div className="sm:col-span-3">
                 <label htmlFor="smtp-pass" className="block text-xs font-medium text-slate-700 mb-1">
-                  SMTP Password {form.hasSmtpPass ? '(Stored in SQLite)' : ''}
+                  SMTP Password {form.hasSmtpPass ? '(Saved)' : ''}
                 </label>
-                <input
-                  id="smtp-pass"
-                  type="password"
-                  placeholder={form.hasSmtpPass ? 'Leave blank to keep saved password' : 'Enter SMTP password'}
-                  value={form.smtpPass || ''}
-                  onChange={(e) => setForm({ ...form, smtpPass: e.target.value })}
-                  className="w-full px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:border-[#006837]"
-                />
+                <div className="relative">
+                  <input
+                    id="smtp-pass"
+                    type={showSmtpPass ? 'text' : 'password'}
+                    placeholder={form.hasSmtpPass ? 'Leave blank to keep saved password' : 'Enter SMTP password'}
+                    value={form.smtpPass || ''}
+                    onChange={(e) => setForm({ ...form, smtpPass: e.target.value })}
+                    className="w-full px-3 py-2 pr-10 rounded-md border border-slate-300 text-sm focus:outline-none focus:border-[#006837]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSmtpPass((prev) => !prev)}
+                    aria-label={showSmtpPass ? 'Hide SMTP password' : 'Show SMTP password'}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-[#0F2437] cursor-pointer"
+                  >
+                    {showSmtpPass ? (
+                      <EyeOff className="w-4 h-4" aria-hidden="true" />
+                    ) : (
+                      <Eye className="w-4 h-4" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="sm:col-span-6">
@@ -984,7 +1003,7 @@ export function SettingsView() {
           <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
             <Server className="w-4 h-4 text-[#006837]" aria-hidden="true" />
             <h2 className="font-display text-base font-semibold text-[#006837]">
-              Document Defaults &amp; Embedded Go Binary Packaging
+              Document &amp; Statement Defaults
             </h2>
           </div>
 
@@ -1032,7 +1051,7 @@ export function SettingsView() {
           </div>
 
           <p className="text-xs text-slate-500 pt-1">
-            Installed desktop packages store SQLite databases and configuration privately in your OS hidden user application data folder and remove them automatically upon uninstallation.
+            System settings and dispatch logs are stored privately in your computer&apos;s application data folder and removed automatically upon uninstallation.
           </p>
 
           <SectionSaveBar

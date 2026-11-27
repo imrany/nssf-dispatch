@@ -172,7 +172,7 @@ export function AdminCredentialsSection() {
       {envManaged ? (
         <AlertBanner
           variant="warning"
-          message="Login is currently overridden by the NSSF_ADMIN_PASSCODE environment variable. Unset NSSF_ADMIN_PASSCODE on the host to manage local SQLite credentials here."
+          message="Login is currently overridden by the NSSF_ADMIN_PASSCODE environment variable. Unset NSSF_ADMIN_PASSCODE on the host to manage local administrator credentials here."
           className="text-xs p-3.5"
         />
       ) : (

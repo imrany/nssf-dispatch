@@ -199,7 +199,7 @@ export function StatementPreviewModal({
                   <div className="flex justify-between gap-2">
                     <span className="text-slate-500">PDF Encryption</span>
                     <span className="font-medium text-[#0F2437] text-right">
-                      RC4-128 ({passwordMode === 'id_and_nssf_last4' ? 'ID + NSSF Last 4' : 'National ID No'})
+                      Password Protected ({passwordMode === 'id_and_nssf_last4' ? 'ID + NSSF Last 4' : 'National ID No'})
                     </span>
                   </div>
                   <div className="flex justify-between gap-2">

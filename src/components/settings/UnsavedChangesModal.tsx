@@ -74,7 +74,7 @@ export function UnsavedChangesModal({
             </div>
 
             <div className="px-5 py-4 text-sm text-slate-600 leading-relaxed">
-              You have modified system configuration settings that have not been saved to SQLite yet. Save your changes before {targetDescription}, or discard them to continue?
+              You have modified system configuration settings that have not been saved yet. Save your changes before {targetDescription}, or discard them to continue?
             </div>
 
             <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">

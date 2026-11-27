@@ -569,9 +569,7 @@ export function DispatchWorkspace() {
           </AnimatePresence>
         </div>
 
-        <div className="text-xs text-slate-500 flex items-center gap-2">
-          <span>Live SMTP &amp; WhatsApp</span>
-          <span aria-hidden="true">·</span>
+        <div className="text-xs flex items-center">
           <button
             type="button"
             onClick={() => navigateTo(ROUTES.SETTINGS)}

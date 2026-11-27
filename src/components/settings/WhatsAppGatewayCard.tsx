@@ -106,8 +106,8 @@ export function WhatsAppGatewayCard({
                   <div>Session: {qrData.sessionCode}</div>
                   <div className="font-sans text-[11px] text-slate-500">
                     {qrDataUri
-                      ? 'Live whatsmeow QR active · Scan with WhatsApp Linked Devices'
-                      : 'Waiting for WhatsApp Web QR stream from Go server'}
+                      ? 'Live QR code active · Scan with WhatsApp Linked Devices'
+                      : 'Waiting for WhatsApp QR code...'}
                   </div>
                 </div>
               )}
@@ -208,26 +208,16 @@ export function WhatsAppGatewayCard({
         </>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
-        <div>
-          <div className="block text-xs font-medium text-slate-700 mb-1">
-            WhatsApp Client Engine
-          </div>
-          <div className="w-full px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-xs font-mono text-slate-600">
-            Built-in Go (whatsmeow)
-          </div>
-        </div>
-        <div>
-          <label htmlFor="wa-device" className="block text-xs font-medium text-slate-700 mb-1">
-            Desk Device Label
-          </label>
-          <input
-            id="wa-device"
-            value={deviceName}
-            onChange={(e) => onDeviceNameChange(e.target.value)}
-            className="w-full px-3 py-1.5 rounded border border-slate-300 text-xs focus:outline-none focus:border-[#006837]"
-          />
-        </div>
+      <div className="pt-2 border-t border-slate-100">
+        <label htmlFor="wa-device" className="block text-xs font-medium text-slate-700 mb-1">
+          Desk Device Label
+        </label>
+        <input
+          id="wa-device"
+          value={deviceName}
+          onChange={(e) => onDeviceNameChange(e.target.value)}
+          className="w-full px-3 py-1.5 rounded border border-slate-300 text-xs focus:outline-none focus:border-[#006837]"
+        />
       </div>
 
       <SectionSaveBar dirty={dirty} saving={saving} onDiscard={onDiscard} />
