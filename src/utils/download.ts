@@ -5,8 +5,25 @@ export function sanitizeSpreadsheetCell(value: string | number): string {
   return /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
 }
 
+function stripInvalidXmlChars(value: string): string {
+  let out = '';
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (
+      code === 0x09 ||
+      code === 0x0a ||
+      code === 0x0d ||
+      (code >= 0x20 && code <= 0xd7ff) ||
+      (code >= 0xe000 && code <= 0xfffd)
+    ) {
+      out += value[i];
+    }
+  }
+  return out;
+}
+
 export function escapeXml(value: string): string {
-  return value
+  return stripInvalidXmlChars(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -19,10 +36,12 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = filename;
+  anchor.rel = 'noopener';
+  anchor.style.display = 'none';
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function toPdfAscii(value: string): string {
@@ -316,11 +335,12 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
 }
 
 export function buildAuditCsvBlob(logs: AuditLog[]): Blob {
+  // Note: Never start an unquoted CSV file with "ID" because Microsoft Excel misidentifies it as a SYLK file.
   const headers = [
-    'ID',
+    'Log ID',
     'Timestamp',
-    'MemberNo',
-    'MemberName',
+    'Member No',
+    'Member Name',
     'Channel',
     'Destination',
     'Filename',
@@ -346,8 +366,116 @@ export function buildAuditCsvBlob(logs: AuditLog[]): Blob {
       .join(',')
   );
 
-  const csv = `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`;
-  return new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const csvBody = [headers.map(escapeCsv).join(','), ...rows].join('\r\n');
+  const encoder = new TextEncoder();
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+  const bodyBytes = encoder.encode(csvBody);
+  const fullBytes = concatBytes([bom, bodyBytes]);
+  return new Blob([fullBytes.buffer as ArrayBuffer], { type: 'text/csv;charset=utf-8;' });
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(data: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i += 1) {
+    c = CRC32_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function buildStoredZip(entries: Array<{ name: string; content: string }>): Uint8Array {
+  const encoder = new TextEncoder();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBytes = encoder.encode(entry.name);
+    const dataBytes = encoder.encode(entry.content);
+    const sum = crc32(dataBytes);
+
+    const localHeader = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(localHeader.buffer);
+    lv.setUint32(0, 0x04034b50, true); // Local file header signature
+    lv.setUint16(4, 20, true); // Version needed to extract (2.0)
+    lv.setUint16(6, 0x0800, true); // UTF-8 filename flag
+    lv.setUint16(8, 0, true); // Compression method 0 (STORE)
+    lv.setUint16(10, 0, true); // Mod time
+    lv.setUint16(12, 0x5421, true); // Mod date
+    lv.setUint32(14, sum, true);
+    lv.setUint32(18, dataBytes.length, true);
+    lv.setUint32(22, dataBytes.length, true);
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true); // Extra field length
+    localHeader.set(nameBytes, 30);
+
+    const centralHeader = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(centralHeader.buffer);
+    cv.setUint32(0, 0x02014b50, true); // Central file header signature
+    cv.setUint16(4, 20, true); // Version made by
+    cv.setUint16(6, 20, true); // Version needed
+    cv.setUint16(8, 0x0800, true); // UTF-8 filename flag
+    cv.setUint16(10, 0, true); // STORE
+    cv.setUint16(12, 0, true); // Mod time
+    cv.setUint16(14, 0x5421, true); // Mod date
+    cv.setUint32(16, sum, true);
+    cv.setUint32(20, dataBytes.length, true);
+    cv.setUint32(24, dataBytes.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint16(30, 0, true); // Extra length
+    cv.setUint16(32, 0, true); // Comment length
+    cv.setUint16(34, 0, true); // Disk number start
+    cv.setUint16(36, 0, true); // Internal attrs
+    cv.setUint32(38, 0, true); // External attrs
+    cv.setUint32(42, offset, true); // Relative offset of local header
+    centralHeader.set(nameBytes, 46);
+
+    localParts.push(localHeader, dataBytes);
+    centralParts.push(centralHeader);
+    offset += localHeader.length + dataBytes.length;
+  }
+
+  let centralSize = 0;
+  for (const part of centralParts) centralSize += part.length;
+
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true); // End of central directory signature
+  ev.setUint16(4, 0, true);
+  ev.setUint16(6, 0, true);
+  ev.setUint16(8, entries.length, true);
+  ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, offset, true);
+  ev.setUint16(20, 0, true);
+
+  return concatBytes([...localParts, ...centralParts, eocd]);
+}
+
+function colLetter(indexZeroBased: number): string {
+  return String.fromCharCode(65 + indexZeroBased);
+}
+
+function inlineStrCell(colIdx: number, rowNum: number, styleIdx: number, value: string): string {
+  return `<c r="${colLetter(colIdx)}${rowNum}" s="${styleIdx}" t="inlineStr"><is><t xml:space="preserve">${escapeXml(
+    value
+  )}</t></is></c>`;
+}
+
+function numberCell(colIdx: number, rowNum: number, styleIdx: number, value: number): string {
+  const num = Number.isFinite(value) ? value : 0;
+  return `<c r="${colLetter(colIdx)}${rowNum}" s="${styleIdx}" t="n"><v>${num}</v></c>`;
 }
 
 export function buildAuditExcelBlob(
@@ -357,7 +485,7 @@ export function buildAuditExcelBlob(
 ): Blob {
   const exportedAt = new Date().toISOString();
   const headers = [
-    'ID',
+    'Log ID',
     'Timestamp',
     'NSSF Member No',
     'Member Name',
@@ -368,92 +496,128 @@ export function buildAuditExcelBlob(
     'Compliance Details',
   ];
 
-  const headerCells = headers
-    .map((h) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(h)}</Data></Cell>`)
-    .join('');
-
-  const dataRows = logs
-    .map((l) => {
-      const textCells = [
-        l.timestamp,
-        l.memberNo,
-        l.memberName,
-        l.channel,
-        l.destination,
-        l.renamedFile,
-        l.status,
-        l.details,
-      ]
-        .map(
-          (val) =>
-            `<Cell ss:StyleID="Cell"><Data ss:Type="String">${escapeXml(
-              sanitizeSpreadsheetCell(val)
-            )}</Data></Cell>`
-        )
-        .join('');
-      return `<Row><Cell ss:StyleID="CellNum"><Data ss:Type="Number">${Number(
-        l.id
-      )}</Data></Cell>${textCells}</Row>`;
-    })
-    .join('');
-
   const searchPart = filters.query.trim()
-    ? ` | Search: ${escapeXml(sanitizeSpreadsheetCell(filters.query.trim()))}`
+    ? ` | Search: ${sanitizeSpreadsheetCell(filters.query.trim())}`
     : '';
 
-  const workbookXml = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="Title">
-   <Font ss:Bold="1" ss:Size="13" ss:Color="#0F2437"/>
-  </Style>
-  <Style ss:ID="Meta">
-   <Font ss:Size="10" ss:Color="#475569"/>
-  </Style>
-  <Style ss:ID="Header">
-   <Font ss:Bold="1" ss:Color="#FFFFFF"/>
-   <Interior ss:Color="#2B7A3B" ss:Pattern="Solid"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#1E6B34"/>
-   </Borders>
-  </Style>
-  <Style ss:ID="Cell">
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-  </Style>
-  <Style ss:ID="CellNum">
-   <NumberFormat ss:Format="0"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-  </Style>
- </Styles>
- <Worksheet ss:Name="NSSF Audit Logs">
-  <Table>
-   <Column ss:Width="45"/>
-   <Column ss:Width="135"/>
-   <Column ss:Width="105"/>
-   <Column ss:Width="180"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="175"/>
-   <Column ss:Width="200"/>
-   <Column ss:Width="115"/>
-   <Column ss:Width="250"/>
-   <Row>
-    <Cell ss:StyleID="Title"><Data ss:Type="String">${escapeXml(appName)} — Compliance Audit Report</Data></Cell>
-   </Row>
-   <Row>
-    <Cell ss:StyleID="Meta"><Data ss:Type="String">Generated: ${escapeXml(exportedAt)} | Channel: ${escapeXml(filters.channel)} | Outcome: ${escapeXml(filters.status)}${searchPart} | Records: ${logs.length}</Data></Cell>
-   </Row>
-   <Row/>
-   <Row>${headerCells}</Row>
-   ${dataRows}
-  </Table>
- </Worksheet>
-</Workbook>`;
+  const rowsXml: string[] = [];
+  rowsXml.push(
+    `<row r="1" ht="22" customHeight="1">${inlineStrCell(
+      0,
+      1,
+      1,
+      `${appName} - Compliance Audit Report`
+    )}</row>`
+  );
+  rowsXml.push(
+    `<row r="2" ht="18" customHeight="1">${inlineStrCell(
+      0,
+      2,
+      2,
+      `Generated: ${exportedAt} | Channel: ${filters.channel} | Outcome: ${filters.status}${searchPart} | Records: ${logs.length}`
+    )}</row>`
+  );
+  rowsXml.push(
+    `<row r="4" ht="22" customHeight="1">${headers
+      .map((h, idx) => inlineStrCell(idx, 4, 3, h))
+      .join('')}</row>`
+  );
 
-  return new Blob([workbookXml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+  logs.forEach((l, i) => {
+    const rowNum = 5 + i;
+    const cells = [
+      numberCell(0, rowNum, 5, Number(l.id)),
+      inlineStrCell(1, rowNum, 4, sanitizeSpreadsheetCell(l.timestamp)),
+      inlineStrCell(2, rowNum, 4, sanitizeSpreadsheetCell(l.memberNo)),
+      inlineStrCell(3, rowNum, 4, sanitizeSpreadsheetCell(l.memberName)),
+      inlineStrCell(4, rowNum, 4, sanitizeSpreadsheetCell(l.channel)),
+      inlineStrCell(5, rowNum, 4, sanitizeSpreadsheetCell(l.destination)),
+      inlineStrCell(6, rowNum, 4, sanitizeSpreadsheetCell(l.renamedFile)),
+      inlineStrCell(7, rowNum, 4, sanitizeSpreadsheetCell(l.status)),
+      inlineStrCell(8, rowNum, 4, sanitizeSpreadsheetCell(l.details)),
+    ].join('');
+    rowsXml.push(`<row r="${rowNum}">${cells}</row>`);
+  });
+
+  const colWidths = [10, 22, 18, 28, 14, 28, 32, 18, 42];
+  const colsXml = colWidths
+    .map((w, idx) => `<col min="${idx + 1}" max="${idx + 1}" width="${w}" customWidth="1"/>`)
+    .join('');
+
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`;
+
+  const rootRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`;
+
+  const workbookRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="NSSF Audit Logs" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="4">
+    <font><sz val="11"/><color rgb="FF0F2437"/><name val="Calibri"/></font>
+    <font><b/><sz val="13"/><color rgb="FF0F2437"/><name val="Calibri"/></font>
+    <font><sz val="10"/><color rgb="FF475569"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF2B7A3B"/></patternFill></fill>
+  </fills>
+  <borders count="3">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left/><right/><top/><bottom style="thin"><color rgb="FF1E6B34"/></bottom><diagonal/></border>
+    <border><left/><right/><top/><bottom style="thin"><color rgb="FFE2E8F0"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
+  </cellStyleXfs>
+  <cellXfs count="6">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="2" xfId="0" applyBorder="1"/>
+    <xf numFmtId="1" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" applyBorder="1"/>
+  </cellXfs>
+</styleSheet>`;
+
+  const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cols>${colsXml}</cols>
+  <sheetData>${rowsXml.join('')}</sheetData>
+</worksheet>`;
+
+  const zipBytes = buildStoredZip([
+    { name: '[Content_Types].xml', content: contentTypesXml },
+    { name: '_rels/.rels', content: rootRelsXml },
+    { name: 'xl/_rels/workbook.xml.rels', content: workbookRelsXml },
+    { name: 'xl/workbook.xml', content: workbookXml },
+    { name: 'xl/styles.xml', content: stylesXml },
+    { name: 'xl/worksheets/sheet1.xml', content: sheetXml },
+  ]);
+
+  return new Blob([zipBytes.buffer as ArrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
 }

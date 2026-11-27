@@ -117,10 +117,10 @@ export function AuditLogsView() {
       status: statusFilter,
       query,
     });
-    triggerBlobDownload(blob, `NSSF_Compliance_Audit_${dateStamp}.xls`);
+    triggerBlobDownload(blob, `NSSF_Compliance_Audit_${dateStamp}.xlsx`);
     toast.success(
       'MS-Excel workbook exported',
-      `${filteredLogs.length} compliance record(s) downloaded as .xls.`
+      `${filteredLogs.length} compliance record(s) downloaded as .xlsx.`
     );
   };
 
@@ -203,10 +203,10 @@ export function AuditLogsView() {
                       />
                       <div>
                         <div className="text-xs font-bold text-[#0F2437]">
-                          Download MS-Excel (.xls)
+                          Download MS-Excel (.xlsx)
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          Formatted spreadsheet workbook report
+                          Formatted Excel workbook report
                         </div>
                       </div>
                     </button>
