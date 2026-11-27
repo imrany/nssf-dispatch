@@ -113,6 +113,7 @@ func buildOfficialNSSFEmailHTML(logoSrc, memberName, period, renamedFile, passwo
 
 func BuildOfficialNSSFMessage(meta *StatementMeta, renamedFile, passwordMode, portalURL, rawPassword, emailSubjectTpl, whatsappMessageTpl string) (subject, htmlBody, plainText, whatsappText, passwordGuide string) {
 	masked := maskSecret(rawPassword)
+	maskedMemberNo := maskSecret(strings.TrimSpace(meta.MemberNo))
 	if passwordMode == "id_and_nssf_last4" {
 		passwordGuide = fmt.Sprintf("Your National ID Card Number followed by the last 4 characters of your NSSF Member Number (%s)", masked)
 	} else {
@@ -121,7 +122,8 @@ func BuildOfficialNSSFMessage(meta *StatementMeta, renamedFile, passwordMode, po
 
 	vars := map[string]string{
 		"memberName":      meta.MemberName,
-		"memberNo":        meta.MemberNo,
+		"memberNo":        maskedMemberNo,
+		"maskedMemberNo":  maskedMemberNo,
 		"period":          meta.Period,
 		"employer":        defaultStr(meta.Employer, "Registered Contributor"),
 		"standardAmount":  meta.StandardAmount,
@@ -166,7 +168,7 @@ You can also check your balances or make voluntary contributions anytime via USS
 
 National Social Security Fund (NSSF) Kenya
 Social Security House, Bishops Road, P.O. Box 30599 - 00100 Nairobi`,
-		meta.MemberName, meta.Period, meta.MemberName, meta.MemberNo, defaultStr(meta.Employer, "Registered Contributor"),
+		meta.MemberName, meta.Period, meta.MemberName, maskedMemberNo, defaultStr(meta.Employer, "Registered Contributor"),
 		meta.StandardAmount, meta.VoluntaryAmount, meta.TotalAmount, renamedFile, renamedFile, passwordGuide, portalURL)
 
 	htmlBody = buildOfficialNSSFEmailHTML(
@@ -175,7 +177,7 @@ Social Security House, Bishops Road, P.O. Box 30599 - 00100 Nairobi`,
 		meta.Period,
 		renamedFile,
 		passwordGuide,
-		meta.MemberNo,
+		maskedMemberNo,
 		meta.StandardAmount,
 		meta.VoluntaryAmount,
 		meta.TotalAmount,
@@ -272,7 +274,7 @@ func SendEmailStatement(cfg AppSettings, recipient string, meta *StatementMeta, 
 			meta.Period,
 			renamedFile,
 			passwordGuide,
-			meta.MemberNo,
+			maskSecret(strings.TrimSpace(meta.MemberNo)),
 			meta.StandardAmount,
 			meta.VoluntaryAmount,
 			meta.TotalAmount,

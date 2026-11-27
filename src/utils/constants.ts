@@ -70,7 +70,7 @@ Self-Service: USSD *303# or {portalUrl}`,
 
 export const TEMPLATE_PLACEHOLDERS: Array<{ token: string; label: string }> = [
   { token: '{memberName}', label: 'Member Name' },
-  { token: '{memberNo}', label: 'Member No' },
+  { token: '{memberNo}', label: 'Member No (Masked)' },
   { token: '{period}', label: 'Period' },
   { token: '{totalAmount}', label: 'Total Balance' },
   { token: '{standardAmount}', label: 'Standard Amt' },
@@ -84,7 +84,8 @@ export const TEMPLATE_PLACEHOLDERS: Array<{ token: string; label: string }> = [
 
 export const SAMPLE_TEMPLATE_VARS: Record<string, string> = {
   memberName: 'JANE WANJIKU KAMAU',
-  memberNo: '102938475',
+  memberNo: '******475',
+  maskedMemberNo: '******475',
   period: 'Jan 2024 - Dec 2024',
   employer: 'KENYA COMMERCIAL BANK LTD',
   standardAmount: '1,240,000.00',
