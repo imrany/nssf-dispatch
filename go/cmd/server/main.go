@@ -28,6 +28,7 @@ import (
 var (
 	appName      = "NSSF Digital Statement Dispatcher"
 	appPublisher = "National Social Security Fund (NSSF) Kenya"
+	appLicense   = "MPL-2.0"
 	appVersion   = "1.0.0"
 	buildCommit  = "dev"
 	buildDate    = "unknown"
@@ -128,7 +129,9 @@ Exec=%s
 Icon=%s
 Terminal=false
 Categories=Office;Finance;
+Keywords=NSSF;Statements;PDF;Dispatch;
 StartupNotify=true
+StartupWMClass=nssf-statement-dispatch
 X-Publisher=%s
 `, appName, targetBin, iconPath, appPublisher)
 
@@ -325,8 +328,8 @@ func main() {
 	cleanupOldExecutableBackup()
 
 	if showVersion || showVersionShort {
-		fmt.Printf("%s v%s\nPublisher: %s\nCommit: %s\nBuilt: %s\nTarget: %s/%s\n",
-			appName, appVersion, appPublisher, buildCommit, buildDate, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("%s v%s\nPublisher: %s\nLicense: %s\nCommit: %s\nBuilt: %s\nTarget: %s/%s\n",
+			appName, appVersion, appPublisher, appLicense, buildCommit, buildDate, runtime.GOOS, runtime.GOARCH)
 		return
 	}
 
@@ -377,6 +380,7 @@ func main() {
 			"ok":               true,
 			"name":             appName,
 			"publisher":        appPublisher,
+			"license":          appLicense,
 			"version":          appVersion,
 			"commit":           buildCommit,
 			"buildDate":        buildDate,
@@ -392,6 +396,7 @@ func main() {
 			"ok":           true,
 			"name":         appName,
 			"publisher":    appPublisher,
+			"license":      appLicense,
 			"version":      appVersion,
 			"commit":       buildCommit,
 			"buildDate":    buildDate,
@@ -404,6 +409,7 @@ func main() {
 				"os":               runtime.GOOS,
 				"arch":             runtime.GOARCH,
 				"publisher":        appPublisher,
+				"license":          appLicense,
 				"sqliteCliBackend": hasSQLiteCLI(),
 			},
 		})

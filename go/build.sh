@@ -9,6 +9,9 @@ SYSO_PATH="$GO_DIR/cmd/server/rsrc_windows_amd64.syso"
 
 APP_NAME="${APP_NAME:-NSSF Digital Statement Dispatcher}"
 APP_PUBLISHER="${APP_PUBLISHER:-National Social Security Fund (NSSF) Kenya}"
+APP_PUBLISHER_EMAIL="${APP_PUBLISHER_EMAIL:-statements@nssfkenya.co.ke}"
+APP_HOMEPAGE="${APP_HOMEPAGE:-https://nssfdigital.enssf.co.ke}"
+APP_LICENSE="${APP_LICENSE:-MPL-2.0}"
 
 RAW_VERSION="${APP_VERSION:-}"
 if [[ -z "$RAW_VERSION" ]] && command -v git >/dev/null 2>&1 && git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -48,8 +51,9 @@ cleanup() {
 trap cleanup EXIT
 
 echo "============================================================"
-echo " Building: $APP_NAME v$APP_VERSION_CLEAN"
+echo " Building:  $APP_NAME v$APP_VERSION_CLEAN"
 echo " Publisher: $APP_PUBLISHER"
+echo " License:   $APP_LICENSE"
 echo " Commit:    $BUILD_COMMIT ($BUILD_DATE)"
 echo "============================================================"
 
@@ -69,7 +73,48 @@ go mod tidy
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR/.stage"
 
-COMMON_LDFLAGS="-s -w -X 'main.appName=$APP_NAME' -X 'main.appPublisher=$APP_PUBLISHER' -X 'main.appVersion=$APP_VERSION_CLEAN' -X 'main.buildCommit=$BUILD_COMMIT' -X 'main.buildDate=$BUILD_DATE' -X 'main.githubRepo=$GITHUB_REPO'"
+COMMON_LDFLAGS="-s -w -X 'main.appName=$APP_NAME' -X 'main.appPublisher=$APP_PUBLISHER' -X 'main.appLicense=$APP_LICENSE' -X 'main.appVersion=$APP_VERSION_CLEAN' -X 'main.buildCommit=$BUILD_COMMIT' -X 'main.buildDate=$BUILD_DATE' -X 'main.githubRepo=$GITHUB_REPO'"
+
+sign_windows_artifact() {
+  local target="$1"
+  local pfx_path="${WINDOWS_CERT_PFX_PATH:-}"
+  local temp_pfx=""
+
+  if [[ -z "$pfx_path" && -n "${WINDOWS_CERT_PFX_BASE64:-}" ]]; then
+    temp_pfx="$RELEASE_DIR/.stage/win-signing-cert.pfx"
+    printf '%s' "$WINDOWS_CERT_PFX_BASE64" | base64 -d > "$temp_pfx"
+    chmod 600 "$temp_pfx"
+    pfx_path="$temp_pfx"
+  fi
+
+  if [[ -z "$pfx_path" || ! -f "$pfx_path" ]]; then
+    return 0
+  fi
+  if ! command -v osslsigncode >/dev/null 2>&1; then
+    echo "Warning: Windows signing certificate supplied, but osslsigncode is not installed; skipping Authenticode signature."
+    rm -f "$temp_pfx"
+    return 0
+  fi
+
+  echo "Signing Windows artifact with Authenticode: $(basename "$target")"
+  local signed_tmp="${target}.signed"
+  local -a sign_args=(
+    sign
+    -pkcs12 "$pfx_path"
+    -n "$APP_NAME"
+    -i "$APP_HOMEPAGE"
+    -h sha256
+    -t "${WINDOWS_TIMESTAMP_URL:-http://timestamp.digicert.com}"
+    -in "$target"
+    -out "$signed_tmp"
+  )
+  if [[ -n "${WINDOWS_CERT_PASSWORD:-}" ]]; then
+    sign_args+=(-pass "$WINDOWS_CERT_PASSWORD")
+  fi
+  osslsigncode "${sign_args[@]}" >/dev/null
+  mv "$signed_tmp" "$target"
+  rm -f "$temp_pfx"
+}
 
 echo "[4/5] Building standalone binaries and desktop app packages..."
 
@@ -91,12 +136,14 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
   -o "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.exe" \
   ./cmd/server
 rm -f "$SYSO_PATH"
+sign_windows_artifact "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.exe"
 
 if command -v zip >/dev/null 2>&1; then
   WIN_STAGE="$RELEASE_DIR/.stage/windows-amd64"
   mkdir -p "$WIN_STAGE"
   cp "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.exe" "$WIN_STAGE/"
   cp "$GO_DIR/packaging/windows/nssf.ico" "$WIN_STAGE/"
+  cp "$ROOT_DIR/LICENSE" "$WIN_STAGE/LICENSE.txt"
 
   cat > "$WIN_STAGE/Start-NSSF-Dispatch.bat" << 'EOF'
 @echo off
@@ -189,7 +236,9 @@ if command -v wixl >/dev/null 2>&1; then
            UpgradeCode="6E2B8D4A-9F1C-4B6A-8D2E-1C4A7F9E3B10">
 
     <Package InstallerVersion="200"
-             Description="${APP_NAME} Windows Installer"
+             Description="${APP_NAME} Windows Installer (${APP_LICENSE})"
+             Comments="Publisher: ${APP_PUBLISHER} | License: ${APP_LICENSE}"
+             Manufacturer="${APP_PUBLISHER}"
              Compressed="yes" />
 
     <Media Id="1" Cabinet="nssf.cab" EmbedCab="yes" />
@@ -197,7 +246,10 @@ if command -v wixl >/dev/null 2>&1; then
     <Icon Id="AppIcon.ico" SourceFile="$GO_DIR/packaging/windows/nssf.ico" />
     <Property Id="ALLUSERS" Value="1" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
-    <Property Id="ARPHELPLINK" Value="https://nssfdigital.enssf.co.ke" />
+    <Property Id="ARPHELPLINK" Value="${APP_HOMEPAGE}" />
+    <Property Id="ARPURLINFOABOUT" Value="${APP_HOMEPAGE}" />
+    <Property Id="ARPCONTACT" Value="${APP_PUBLISHER_EMAIL}" />
+    <Property Id="ARPCOMMENTS" Value="Licensed under Mozilla Public License Version 2.0 (${APP_LICENSE})" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
@@ -213,6 +265,12 @@ if command -v wixl >/dev/null 2>&1; then
               <File Id="AppIconFile"
                     Name="nssf.ico"
                     Source="$GO_DIR/packaging/windows/nssf.ico"
+                    KeyPath="yes" />
+            </Component>
+            <Component Id="LicenseFileComponent" Guid="E7F3A5B6-8C9D-4E0F-A1B2-3C4D5E6F7081" Win64="yes">
+              <File Id="LicenseTextFile"
+                    Name="LICENSE.txt"
+                    Source="$ROOT_DIR/LICENSE"
                     KeyPath="yes" />
             </Component>
           </Directory>
@@ -264,6 +322,7 @@ if command -v wixl >/dev/null 2>&1; then
     <Feature Id="Complete" Title="${APP_NAME}" Level="1">
       <ComponentRef Id="MainAppComponent" />
       <ComponentRef Id="AppIconComponent" />
+      <ComponentRef Id="LicenseFileComponent" />
       <ComponentRef Id="StartMenuShortcutComponent" />
       <ComponentRef Id="DesktopShortcutComponent" />
     </Feature>
@@ -285,6 +344,7 @@ EOF
     echo "Error: wixl completed without producing a valid Windows .msi installer." >&2
     exit 1
   fi
+  sign_windows_artifact "$RELEASE_DIR/NSSF-Statement-Dispatch-windows-amd64.msi"
 else
   if [[ "${REQUIRE_MSI:-0}" == "1" ]]; then
     echo "Error: wixl (msitools) is required when REQUIRE_MSI=1." >&2
@@ -312,6 +372,8 @@ package_linux() {
   chmod 755 "$stage/nssf-statement-dispatch"
   cp "$GO_DIR/packaging/linux/nssf-dispatch.desktop" "$stage/"
   cp "$GO_DIR/packaging/linux/nssf-dispatch.png" "$stage/"
+  cp "$GO_DIR/packaging/linux/ke.co.nssf.statementdispatch.metainfo.xml" "$stage/"
+  cp "$ROOT_DIR/LICENSE" "$stage/LICENSE"
 
   cat > "$stage/start.sh" << 'EOF'
 #!/usr/bin/env bash
@@ -329,6 +391,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${HOME}/.local/bin"
 APP_DIR="${HOME}/.local/share/applications"
+METAINFO_DIR="${HOME}/.local/share/metainfo"
+DOC_DIR="${HOME}/.local/share/doc/nssf-statement-dispatch"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/512x512/apps"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 TARGET_BIN="$BIN_DIR/nssf-statement-dispatch"
@@ -343,10 +407,16 @@ for arg in "$@"; do
   esac
 done
 
-mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR" "${HOME}/.config/nssf-dispatch"
+mkdir -p "$BIN_DIR" "$APP_DIR" "$METAINFO_DIR" "$DOC_DIR" "$ICON_DIR" "${HOME}/.config/nssf-dispatch"
 chmod 700 "${HOME}/.config/nssf-dispatch"
 install -m 755 "$SCRIPT_DIR/nssf-statement-dispatch" "$TARGET_BIN"
 install -m 644 "$SCRIPT_DIR/nssf-dispatch.png" "$TARGET_ICON"
+if [[ -f "$SCRIPT_DIR/ke.co.nssf.statementdispatch.metainfo.xml" ]]; then
+  install -m 644 "$SCRIPT_DIR/ke.co.nssf.statementdispatch.metainfo.xml" "$METAINFO_DIR/ke.co.nssf.statementdispatch.metainfo.xml"
+fi
+if [[ -f "$SCRIPT_DIR/LICENSE" ]]; then
+  install -m 644 "$SCRIPT_DIR/LICENSE" "$DOC_DIR/LICENSE"
+fi
 
 cat > "$APP_DIR/nssf-dispatch.desktop" << DESKTOP
 [Desktop Entry]
@@ -358,7 +428,9 @@ Exec=$TARGET_BIN
 Icon=$TARGET_ICON
 Terminal=false
 Categories=Office;Finance;
+Keywords=NSSF;Statements;PDF;Dispatch;
 StartupNotify=true
+StartupWMClass=nssf-statement-dispatch
 X-Publisher=National Social Security Fund (NSSF) Kenya
 DESKTOP
 chmod 755 "$APP_DIR/nssf-dispatch.desktop"
@@ -423,6 +495,8 @@ pkill -x nssf-statement-dispatch >/dev/null 2>&1 || true
 rm -f "${HOME}/.config/systemd/user/nssf-dispatch.service"
 rm -f "${HOME}/.local/bin/nssf-statement-dispatch"
 rm -f "${HOME}/.local/share/applications/nssf-dispatch.desktop"
+rm -f "${HOME}/.local/share/metainfo/ke.co.nssf.statementdispatch.metainfo.xml"
+rm -rf "${HOME}/.local/share/doc/nssf-statement-dispatch"
 rm -f "${HOME}/Desktop/nssf-dispatch.desktop"
 rm -f "${HOME}/.local/share/icons/hicolor/512x512/apps/nssf-dispatch.png"
 rm -rf "${HOME}/.config/nssf-dispatch" "${HOME}/.local/share/nssf-dispatch" "${HOME}/.nssf-dispatch"
@@ -466,6 +540,8 @@ EOF
     mkdir -p "$deb_root/DEBIAN" \
       "$deb_root/usr/bin" \
       "$deb_root/usr/share/applications" \
+      "$deb_root/usr/share/metainfo" \
+      "$deb_root/usr/share/doc/nssf-statement-dispatch" \
       "$deb_root/usr/share/icons/hicolor/512x512/apps" \
       "$deb_root/usr/share/pixmaps" \
       "$deb_root/usr/lib/systemd/user"
@@ -473,6 +549,26 @@ EOF
     install -m 755 "$RELEASE_DIR/$bin_name" "$deb_root/usr/bin/nssf-statement-dispatch"
     install -m 644 "$GO_DIR/packaging/linux/nssf-dispatch.png" "$deb_root/usr/share/icons/hicolor/512x512/apps/nssf-dispatch.png"
     install -m 644 "$GO_DIR/packaging/linux/nssf-dispatch.png" "$deb_root/usr/share/pixmaps/nssf-dispatch.png"
+    install -m 644 "$GO_DIR/packaging/linux/ke.co.nssf.statementdispatch.metainfo.xml" "$deb_root/usr/share/metainfo/ke.co.nssf.statementdispatch.metainfo.xml"
+    install -m 644 "$ROOT_DIR/LICENSE" "$deb_root/usr/share/doc/nssf-statement-dispatch/LICENSE"
+
+    cat > "$deb_root/usr/share/doc/nssf-statement-dispatch/copyright" << COPYRIGHT
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: nssf-statement-dispatch
+Upstream-Contact: ${APP_PUBLISHER} <${APP_PUBLISHER_EMAIL}>
+Source: ${APP_HOMEPAGE}
+
+Files: *
+Copyright: 2026 ${APP_PUBLISHER}
+License: MPL-2.0
+ This Source Code Form is subject to the terms of the Mozilla Public
+ License, v. 2.0. If a copy of the MPL was not distributed with this
+ file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ .
+ On Debian and Ubuntu systems, the full license text is included alongside
+ this notice in /usr/share/doc/nssf-statement-dispatch/LICENSE.
+COPYRIGHT
+    chmod 644 "$deb_root/usr/share/doc/nssf-statement-dispatch/copyright"
 
     cat > "$deb_root/usr/share/applications/nssf-dispatch.desktop" << DESKTOP
 [Desktop Entry]
@@ -484,7 +580,9 @@ Exec=/usr/bin/nssf-statement-dispatch
 Icon=nssf-dispatch
 Terminal=false
 Categories=Office;Finance;
+Keywords=NSSF;Statements;PDF;Dispatch;
 StartupNotify=true
+StartupWMClass=nssf-statement-dispatch
 X-Publisher=National Social Security Fund (NSSF) Kenya
 DESKTOP
     chmod 644 "$deb_root/usr/share/applications/nssf-dispatch.desktop"
@@ -504,16 +602,22 @@ WantedBy=default.target
 UNIT
     chmod 644 "$deb_root/usr/lib/systemd/user/nssf-dispatch.service"
 
+    local installed_kb
+    installed_kb="$(du -sk "$deb_root" | awk '{print $1}')"
+
     cat > "$deb_root/DEBIAN/control" << CONTROL
 Package: nssf-statement-dispatch
 Version: ${deb_ver}
 Section: utils
 Priority: optional
 Architecture: ${deb_arch}
-Maintainer: ${APP_PUBLISHER}
+Installed-Size: ${installed_kb}
+Maintainer: ${APP_PUBLISHER} <${APP_PUBLISHER_EMAIL}>
+Homepage: ${APP_HOMEPAGE}
 Description: ${APP_NAME}
  Internal NSSF Service Desk portal for validating, password-protecting,
  and dispatching member statements via Email (SMTP) and WhatsApp.
+ License: ${APP_LICENSE}
 CONTROL
 
     cat > "$deb_root/DEBIAN/postinst" << 'POSTINST'
@@ -580,6 +684,8 @@ package_macos() {
   cp "$RELEASE_DIR/$bin_name" "$app_dir/Contents/MacOS/nssf-statement-dispatch-darwin"
   chmod 755 "$app_dir/Contents/MacOS/nssf-statement-dispatch-darwin"
   cp "$GO_DIR/packaging/macos/nssf.icns" "$app_dir/Contents/Resources/nssf.icns"
+  cp "$ROOT_DIR/LICENSE" "$app_dir/Contents/Resources/LICENSE"
+  cp "$ROOT_DIR/LICENSE" "$stage/LICENSE"
   sed "s|<string>1\.0\.0</string>|<string>${APP_VERSION_CLEAN}</string>|g" \
     "$GO_DIR/packaging/macos/Info.plist" > "$app_dir/Contents/Info.plist"
 
@@ -619,7 +725,7 @@ NSSF Digital Statement Dispatcher — macOS Setup
    Run ./uninstall-macos.sh to remove the app and all stored user data.
 EOF
 
-  tar -czf "$RELEASE_DIR/$bundle_tar" -C "$stage" "$APP_NAME.app" "install-macos.sh" "uninstall-macos.sh" "SETUP.txt"
+  tar -czf "$RELEASE_DIR/$bundle_tar" -C "$stage" "$APP_NAME.app" "install-macos.sh" "uninstall-macos.sh" "SETUP.txt" "LICENSE"
 }
 
 package_macos amd64

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>ke.co.nssf.statementdispatch</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+  <name>NSSF Digital Statement Dispatcher</name>
+  <summary>Validate, password-protect, and securely dispatch NSSF member statements</summary>
+  <description>
+    <p>
+      NSSF Digital Statement Dispatcher is the official desktop portal for
+      validating, encrypting, and securely dispatching member statements via
+      Email (SMTP) and WhatsApp for the National Social Security Fund (NSSF) Kenya.
+    </p>
+    <p>
+      All member documents are processed locally on the workstation with full
+      audit logging and per-member PDF password protection.
+    </p>
+  </description>
+  <developer id="ke.co.nssf">
+    <name>National Social Security Fund (NSSF) Kenya</name>
+  </developer>
+  <launchable type="desktop-id">nssf-dispatch.desktop</launchable>
+  <provides>
+    <binary>nssf-statement-dispatch</binary>
+  </provides>
+  <url type="homepage">https://nssfdigital.enssf.co.ke</url>
+  <categories>
+    <category>Office</category>
+    <category>Finance</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+</component>

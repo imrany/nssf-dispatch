@@ -7,6 +7,7 @@ Exec=nssf-statement-dispatch
 Icon=nssf-dispatch
 Terminal=false
 Categories=Office;Finance;
+Keywords=NSSF;Statements;PDF;Dispatch;
 StartupNotify=true
+StartupWMClass=nssf-statement-dispatch
 X-Publisher=National Social Security Fund (NSSF) Kenya
-

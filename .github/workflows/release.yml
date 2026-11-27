@@ -68,25 +68,34 @@ jobs:
           go-version: '1.26.x'
           cache: false
 
-      - name: Install cross-packaging tools (mingw-w64, zip, msitools, wixl)
+      - name: Install cross-packaging tools (mingw-w64, zip, msitools, wixl, osslsigncode, appstream)
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 zip msitools wixl
+          sudo apt-get install -y mingw-w64 zip msitools wixl osslsigncode appstream
           wixl --version
 
       - name: Build frontend & cross-platform Go packages
         env:
           APP_VERSION: ${{ steps.meta.outputs.version }}
           REQUIRE_MSI: '1'
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: bash go/build.sh
 
-      - name: Verify Linux binary, .deb, and Windows .msi metadata
+      - name: Verify Linux binary, .deb, AppStream metainfo, and Windows .msi metadata
         run: |
           ls -lh ./go/release/
           test -s ./go/release/NSSF-Statement-Dispatch-windows-amd64.msi
           ./go/release/nssf-statement-dispatch-linux-amd64 --version
+          appstreamcli validate --no-net ./go/packaging/linux/ke.co.nssf.statementdispatch.metainfo.xml
           dpkg-deb -I ./go/release/NSSF-Statement-Dispatch-linux-amd64.deb
+          dpkg-deb -c ./go/release/NSSF-Statement-Dispatch-linux-amd64.deb | grep -E 'copyright|metainfo|LICENSE'
           msiinfo suminfo ./go/release/NSSF-Statement-Dispatch-windows-amd64.msi
+          if [ -n "${{ secrets.WINDOWS_CERT_PFX_BASE64 }}" ]; then
+            osslsigncode verify ./go/release/NSSF-Statement-Dispatch-windows-amd64.exe
+            osslsigncode verify ./go/release/NSSF-Statement-Dispatch-windows-amd64.msi
+          fi
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release != false)
