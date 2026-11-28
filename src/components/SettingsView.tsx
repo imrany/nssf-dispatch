@@ -836,7 +836,7 @@ export function SettingsView() {
                   )}
                 </div>
                 <div className="text-xs text-slate-500 mt-0.5">
-                  Allow staff to view parsed details and PDF preview before sending.
+                  Show parsed details and PDF preview first before staff click Encrypt &amp; Send.
                 </div>
               </div>
             </label>

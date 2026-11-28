@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   CheckCircle2,
-  Eye,
   FileText,
   Keyboard,
   RefreshCw,
@@ -229,18 +228,14 @@ export function DispatchWorkspace() {
     return 'Network error communicating with the NSSF Dispatch Server.';
   };
 
-  const executeDispatch = async (overrideChannel?: DispatchChannel) => {
-    if (submitting) return;
-    setErrorMsg('');
-    const activeChannel = overrideChannel ?? channel;
-
+  const validateDispatchReady = (activeChannel: DispatchChannel): boolean => {
     if (!file || !validatedMeta) {
       const msg = 'Please attach and validate an official NSSF statement PDF before dispatching.';
       setPreviewOpen(false);
       setErrorMsg(msg);
       toast.error(getDispatchFailureTitle(activeChannel, msg), msg);
       setStep('validate');
-      return;
+      return false;
     }
 
     if ((activeChannel === 'email' || activeChannel === 'both') && !emailReady) {
@@ -250,7 +245,7 @@ export function DispatchWorkspace() {
       setPreviewOpen(false);
       setErrorMsg(msg);
       toast.error('Email dispatch failed', msg);
-      return;
+      return false;
     }
 
     if ((activeChannel === 'whatsapp' || activeChannel === 'both') && !whatsappReady) {
@@ -260,7 +255,7 @@ export function DispatchWorkspace() {
       setPreviewOpen(false);
       setErrorMsg(msg);
       toast.error('WhatsApp dispatch failed', msg);
-      return;
+      return false;
     }
 
     if ((activeChannel === 'email' || activeChannel === 'both') && !isValidEmail(email)) {
@@ -269,7 +264,7 @@ export function DispatchWorkspace() {
       setErrorMsg(msg);
       focusFieldById('member-email');
       toast.error('Email dispatch failed', msg);
-      return;
+      return false;
     }
 
     if ((activeChannel === 'whatsapp' || activeChannel === 'both') && !isValidWhatsappNumber(whatsapp)) {
@@ -278,6 +273,18 @@ export function DispatchWorkspace() {
       setErrorMsg(msg);
       focusFieldById('member-whatsapp');
       toast.error('WhatsApp dispatch failed', msg);
+      return false;
+    }
+
+    return true;
+  };
+
+  const executeDispatch = async (overrideChannel?: DispatchChannel) => {
+    if (submitting) return;
+    setErrorMsg('');
+    const activeChannel = overrideChannel ?? channel;
+
+    if (!validateDispatchReady(activeChannel) || !file) {
       return;
     }
 
@@ -316,9 +323,26 @@ export function DispatchWorkspace() {
     }
   };
 
+  const triggerSendOrPreview = async (overrideChannel?: DispatchChannel) => {
+    if (submitting) return;
+    setErrorMsg('');
+    const activeChannel = overrideChannel ?? channel;
+
+    if (!validateDispatchReady(activeChannel)) {
+      return;
+    }
+
+    if (settings.previewBeforeDispatch) {
+      setPreviewOpen(true);
+      return;
+    }
+
+    await executeDispatch(activeChannel);
+  };
+
   const handleDispatch = async (e: React.FormEvent) => {
     e.preventDefault();
-    await executeDispatch();
+    await triggerSendOrPreview();
   };
 
   shortcutHandlerRef.current = (e: KeyboardEvent) => {
@@ -326,18 +350,10 @@ export function DispatchWorkspace() {
     if (!mod) return;
 
     const key = e.key.toLowerCase();
-    if (key !== 'e' && key !== 'w' && key !== 'b' && key !== 'p') return;
-
-    if (key === 'p') {
-      if (step === 'confirm' && settings.previewBeforeDispatch) {
-        e.preventDefault();
-        setPreviewOpen((prev) => !prev);
-      }
-      return;
-    }
+    if (key !== 'e' && key !== 'w' && key !== 'b') return;
 
     e.preventDefault();
-    if (uploadBusy || submitting) return;
+    if (uploadBusy || submitting || previewOpen) return;
 
     const emailValid = isValidEmail(email);
     const whatsappValid = isValidWhatsappNumber(whatsapp);
@@ -365,9 +381,9 @@ export function DispatchWorkspace() {
       } else if (step === 'confirm') {
         setChannel('email');
         if (emailValid) {
-          void executeDispatch('email');
+          void triggerSendOrPreview('email');
         } else {
-          const msg = 'Enter a valid member email address and press Ctrl+E again to send.';
+          const msg = 'Enter a valid member email address and press Ctrl+E again to continue.';
           setErrorMsg(msg);
           focusFieldById('member-email');
           toast.error('Invalid member email', msg);
@@ -402,9 +418,9 @@ export function DispatchWorkspace() {
       } else if (step === 'confirm') {
         setChannel('whatsapp');
         if (whatsappValid) {
-          void executeDispatch('whatsapp');
+          void triggerSendOrPreview('whatsapp');
         } else {
-          const msg = 'Enter a valid WhatsApp phone number and press Ctrl+W again to send.';
+          const msg = 'Enter a valid WhatsApp phone number and press Ctrl+W again to continue.';
           setErrorMsg(msg);
           focusFieldById('member-whatsapp');
           toast.error('Invalid WhatsApp number', msg);
@@ -437,9 +453,9 @@ export function DispatchWorkspace() {
       } else if (step === 'confirm') {
         setChannel('both');
         if (emailValid && whatsappValid) {
-          void executeDispatch('both');
+          void triggerSendOrPreview('both');
         } else {
-          const msg = 'Enter both a valid Email and WhatsApp number, then press Ctrl+B again to send.';
+          const msg = 'Enter both a valid Email and WhatsApp number, then press Ctrl+B again to continue.';
           setErrorMsg(msg);
           focusFieldById(!emailValid ? 'member-email' : 'member-whatsapp');
           toast.error('Incomplete recipient details', msg);
@@ -1018,26 +1034,12 @@ export function DispatchWorkspace() {
             </div>
 
             <div className="space-y-3 pt-2">
-              {settings.previewBeforeDispatch && (
-                <ActionButton
-                  variant="outlineGreen"
-                  fullWidth
-                  size="lg"
-                  disabled={submitting}
-                  onClick={() => setPreviewOpen(true)}
-                >
-                  <Eye className="w-4 h-4" aria-hidden="true" />
-                  <span>PREVIEW PARSED DETAILS &amp; PDF</span>
-                  <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono font-normal normal-case tracking-normal border border-emerald-200 bg-emerald-50 text-[#1E6B34]">
-                    Ctrl+P
-                  </kbd>
-                </ActionButton>
-              )}
-
               <ActionButton type="submit" fullWidth size="lg" disabled={submitting}>
                 {submitting
-                  ? 'ENCRYPTING & DISPATCHING...'
-                  : 'ENCRYPT & DISPATCH STATEMENT'}
+                  ? 'ENCRYPTING & SENDING...'
+                  : settings.previewBeforeDispatch
+                    ? 'PREVIEW & SEND'
+                    : 'ENCRYPT & SEND'}
               </ActionButton>
 
               <ActionButton
@@ -1079,14 +1081,6 @@ export function DispatchWorkspace() {
           </kbd>
           <span>Both</span>
         </span>
-        {settings.previewBeforeDispatch && (
-          <span className="inline-flex items-center gap-1">
-            <kbd className="px-1.5 py-0.5 rounded border border-slate-200 bg-white font-mono text-[10px] text-[#0F2437]">
-              Ctrl+P
-            </kbd>
-            <span>Preview PDF</span>
-          </span>
-        )}
       </div>
 
       {settings.previewBeforeDispatch && (

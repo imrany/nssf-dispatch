@@ -51,13 +51,13 @@ export function StatementPreviewModal({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !submitting) {
         onClose();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+  }, [open, submitting, onClose]);
 
   const recipientSummary = [
     channel === 'email' || channel === 'both' ? email.trim() || 'Email pending' : null,
@@ -129,7 +129,9 @@ export function StatementPreviewModal({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.16, ease: SMOOTH_EASE }}
-          onClick={onClose}
+          onClick={() => {
+            if (!submitting) onClose();
+          }}
           className="fixed inset-0 z-50 bg-[#0F2437]/60 backdrop-blur-[2px] flex items-center justify-center p-3 sm:p-6 overflow-y-auto"
         >
           <motion.div
@@ -153,19 +155,20 @@ export function StatementPreviewModal({
                     id="statement-preview-modal-title"
                     className="font-display text-base sm:text-lg font-bold text-[#0F2437] truncate"
                   >
-                    Pre-Dispatch Statement Preview
+                    Pre-Send Statement Preview
                   </h2>
                   <p className="text-xs text-slate-500 truncate">
-                    Verify parsed member record and PDF statement output before encryption &amp; dispatch
+                    Verify parsed member details, recipient, and PDF before clicking Encrypt &amp; Send
                   </p>
                 </div>
               </div>
 
               <button
                 type="button"
+                disabled={submitting}
                 onClick={onClose}
                 aria-label="Close statement preview modal"
-                className="p-2 rounded-md text-slate-500 hover:text-[#0F2437] hover:bg-slate-200/60 transition-colors cursor-pointer shrink-0"
+                className="p-2 rounded-md text-slate-500 hover:text-[#0F2437] hover:bg-slate-200/60 disabled:opacity-40 transition-colors cursor-pointer shrink-0"
               >
                 <X className="w-4 h-4" aria-hidden="true" />
               </button>
@@ -250,10 +253,11 @@ export function StatementPreviewModal({
               <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
                 <button
                   type="button"
+                  disabled={submitting}
                   onClick={onClose}
-                  className="px-4 py-2.5 rounded border border-[#D1D9E0] bg-white text-xs font-bold uppercase tracking-wider text-[#0F2437] hover:bg-slate-100 cursor-pointer transition-colors"
+                  className="px-4 py-2.5 rounded border border-[#D1D9E0] bg-white text-xs font-bold uppercase tracking-wider text-[#0F2437] hover:bg-slate-100 disabled:opacity-50 cursor-pointer transition-colors"
                 >
-                  Close Preview
+                  Edit Details
                 </button>
 
                 {canDispatchDirectly && (
@@ -264,7 +268,7 @@ export function StatementPreviewModal({
                     className="inline-flex items-center gap-2 px-5 py-2.5 rounded bg-[#2B7A3B] hover:bg-[#226430] text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50 cursor-pointer transition-colors"
                   >
                     <Send className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>{submitting ? 'Sending...' : 'Confirm & Send Statement'}</span>
+                    <span>{submitting ? 'Encrypting & Sending...' : 'Encrypt & Send'}</span>
                   </button>
                 )}
               </div>
