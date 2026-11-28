@@ -2,9 +2,9 @@
   <img src="public/assets/nssf-cl_d27cbb88.png" alt="NSSF — Growing You. For Good" height="72" />
 </p>
 
-# NSSF Digital — Member Statement Dispatch
+# NSSF Digital Statement Dispatch
 
-Internal NSSF Service Desk portal for validating member PDF statements against member numbers, applying password-protected PDF encryption, and securely dispatching statements to members via **Email (SMTP)** and **WhatsApp**.
+Internal NSSF solution used in sending password-protected member statements via **Email (SMTP)** & **WhatsApp** in 30 seconds — directly from NSSF Customer Care & Huduma desks.
 
 Powered exclusively by a **standalone zero-dependency Go backend** (`go/cmd/server/`) serving both `/api/*` endpoints and the embedded React frontend (`//go:embed dist/*`).
 
