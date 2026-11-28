@@ -104,6 +104,13 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: NSSF Digital Statement Dispatcher ${{ steps.meta.outputs.tag }}
+          body: |
+            ### Desktop Installers
+            - **Windows Installer (Recommended):** `NSSF-Statement-Dispatch-windows-amd64.msi` (or portable `NSSF-Statement-Dispatch-windows-amd64.zip`)
+            - **Ubuntu / Debian:** `NSSF-Statement-Dispatch-linux-amd64.deb` / `NSSF-Statement-Dispatch-linux-arm64.deb`
+            - **macOS:** `NSSF-Statement-Dispatch-macos-arm64.app.tar.gz` / `NSSF-Statement-Dispatch-macos-amd64.app.tar.gz`
+
+            *(Expand **Assets** below if GitHub collapses the full list of 14 release files.)*
           generate_release_notes: true
           prerelease: ${{ steps.meta.outputs.prerelease }}
           make_latest: ${{ steps.meta.outputs.prerelease == 'false' }}
