@@ -8,7 +8,6 @@ Internal NSSF solution used in sending password-protected member statements via 
 
 Powered exclusively by a **standalone zero-dependency Go backend** (`go/cmd/server/`) serving both `/api/*` endpoints and the embedded React frontend (`//go:embed dist/*`).
 
----
 
 ## Key Features
 
@@ -23,14 +22,12 @@ Powered exclusively by a **standalone zero-dependency Go backend** (`go/cmd/serv
 - **Standalone Go Backend (`go/cmd/server`)**
   - Feature-complete Go HTTP server implementing validation, PDF encryption, SMTP/WhatsApp dispatch, QR pairing, admin authentication (`PBKDF2-HMAC-SHA256` + HMAC-signed Bearer sessions), audit logs, and embedded `dist/*` SPA serving.
 
----
 
 ## Tech Stack
 
 - **Frontend**: React 19, TypeScript, Vite 8, Tailwind CSS v4, Motion, Lucide React
 - **Go Backend**: Go (`go/cmd/server`) using `net/http`, `crypto/*`, `net/smtp`, `go.mau.fi/whatsmeow` (native WhatsApp Web Multi-Device client), `modernc.org/sqlite` (pure-Go `CGO_ENABLED=0` SQLite driver), `rsc.io/qr`, and `os/exec` `sqlite3` CLI with automatic JSON-state persistence fallback when `sqlite3` is absent
 
----
 
 ## Environment Variables
 
@@ -47,7 +44,6 @@ Copy `.env.example` to `.env` if needed:
 | `NSSF_UPDATE_REPO` | Optional GitHub `owner/repo` slug for automatic self-updates (auto-injected by CI builds) | _(from build ldflags)_ |
 | `NSSF_AUTO_UPDATE` | Set to `false` or `0` to disable background automatic self-updates | `true` |
 
----
 
 ## Running in Development
 
@@ -75,7 +71,6 @@ npm run dev
 npm run lint
 ```
 
----
 
 ## Build & Package Cross-Platform Desktop Releases
 
@@ -107,7 +102,6 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
----
 
 ## API Overview
 
