@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/assets/nssf-cl_d27cbb88.png" alt="NSSF — Growing You. For Good" height="72" />
+</p>
+
 # NSSF Digital — Member Statement Dispatch
 
 Internal NSSF Service Desk portal for validating member PDF statements against member numbers, applying password-protected PDF encryption, and securely dispatching statements to members via **Email (SMTP)** and **WhatsApp**.
