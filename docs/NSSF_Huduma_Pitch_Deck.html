@@ -49,6 +49,7 @@
     visibility: hidden;
     pointer-events: none;
     transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease, visibility 0s linear 0.32s;
+    will-change: transform, opacity;
   }
   .toolbar.is-visible {
     transform: translateY(0);
@@ -234,6 +235,7 @@
     box-shadow: 0 -6px 20px rgba(15, 36, 55, 0.14);
     transform: translateY(100%); opacity: 0; visibility: hidden; pointer-events: none;
     transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease, visibility 0s linear 0.32s;
+    will-change: transform, opacity;
   }
   .controller-bar.is-visible {
     transform: translateY(0); opacity: 1; visibility: visible; pointer-events: auto;
@@ -566,47 +568,166 @@
     const lightboxImg = document.getElementById("lightboxImg");
 
     let current = window.location.hash === "#contract" ? total - 1 : 0;
+
+    // Auto-hide / appear top & bottom navbars (reveal on edge hover, focus, or edge tap)
+    const TOP_EDGE_PX = 80;
+    const BOTTOM_EDGE_PX = 90;
+    const HIDE_DELAY_MS = 1400;
     let hideTopTimer = null;
     let hideBottomTimer = null;
+    let hoverTop = false;
+    let hoverBottom = false;
 
-    function showTopBar() { clearTimeout(hideTopTimer); topToolbar.classList.add("is-visible"); }
-    function hideTopBar(delay = 1600) {
-      clearTimeout(hideTopTimer);
-      hideTopTimer = setTimeout(() => topToolbar.classList.remove("is-visible"), delay);
+    function hasKeyboardFocus(container) {
+      const active = document.activeElement;
+      if (!active || !container.contains(active)) return false;
+      try {
+        return active.matches(":focus-visible");
+      } catch (_) {
+        return false;
+      }
     }
-    function showBottomBar() { clearTimeout(hideBottomTimer); bottomController.classList.add("is-visible"); }
-    function hideBottomBar(delay = 1600) {
-      clearTimeout(hideBottomTimer);
-      hideBottomTimer = setTimeout(() => bottomController.classList.remove("is-visible"), delay);
+    function cancelHideTop() {
+      if (hideTopTimer !== null) {
+        clearTimeout(hideTopTimer);
+        hideTopTimer = null;
+      }
     }
-
-    document.addEventListener("mousemove", (e) => {
+    function cancelHideBottom() {
+      if (hideBottomTimer !== null) {
+        clearTimeout(hideBottomTimer);
+        hideBottomTimer = null;
+      }
+    }
+    function showTopBar() {
       if (lightbox.classList.contains("open")) return;
-      if (e.clientY <= 80) showTopBar(); else hideTopBar();
-      if (e.clientY >= window.innerHeight - 90) showBottomBar(); else hideBottomBar();
+      cancelHideTop();
+      topToolbar.classList.add("is-visible");
+    }
+    function scheduleHideTopBar(delay) {
+      if (!topToolbar.classList.contains("is-visible")) return;
+      if (typeof delay !== "number" && hideTopTimer !== null) return;
+      cancelHideTop();
+      hideTopTimer = setTimeout(function () {
+        hideTopTimer = null;
+        if (!hoverTop && !hasKeyboardFocus(topToolbar)) {
+          topToolbar.classList.remove("is-visible");
+        }
+      }, typeof delay === "number" ? delay : HIDE_DELAY_MS);
+    }
+    function showBottomBar() {
+      if (lightbox.classList.contains("open")) return;
+      cancelHideBottom();
+      bottomController.classList.add("is-visible");
+    }
+    function scheduleHideBottomBar(delay) {
+      if (!bottomController.classList.contains("is-visible")) return;
+      if (typeof delay !== "number" && hideBottomTimer !== null) return;
+      cancelHideBottom();
+      hideBottomTimer = setTimeout(function () {
+        hideBottomTimer = null;
+        if (!hoverBottom && !hasKeyboardFocus(bottomController)) {
+          bottomController.classList.remove("is-visible");
+        }
+      }, typeof delay === "number" ? delay : HIDE_DELAY_MS);
+    }
+
+    document.addEventListener("mousemove", function (e) {
+      if (lightbox.classList.contains("open")) return;
+      const topThreshold = topToolbar.classList.contains("is-visible")
+        ? Math.max(TOP_EDGE_PX, topToolbar.offsetHeight + 12)
+        : TOP_EDGE_PX;
+      const bottomThreshold = window.innerHeight - (
+        bottomController.classList.contains("is-visible")
+          ? Math.max(BOTTOM_EDGE_PX, bottomController.offsetHeight + 12)
+          : BOTTOM_EDGE_PX
+      );
+      if (hoverTop || e.clientY <= topThreshold) {
+        showTopBar();
+      } else {
+        scheduleHideTopBar();
+      }
+      if (hoverBottom || e.clientY >= bottomThreshold) {
+        showBottomBar();
+      } else {
+        scheduleHideBottomBar();
+      }
     }, { passive: true });
 
-    hideTopBar(1600);
-    hideBottomBar(1600);
+    document.addEventListener("mouseleave", function () {
+      hoverTop = false;
+      hoverBottom = false;
+      scheduleHideTopBar(160);
+      scheduleHideBottomBar(160);
+    });
 
-    slots.forEach((slot, i) => {
+    topToolbar.addEventListener("mouseenter", function () {
+      hoverTop = true;
+      showTopBar();
+    });
+    topToolbar.addEventListener("mouseleave", function () {
+      hoverTop = false;
+      scheduleHideTopBar();
+    });
+    topToolbar.addEventListener("click", function (e) {
+      if (e.detail > 0 && document.activeElement && topToolbar.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    });
+    topToolbar.addEventListener("focusin", function () {
+      if (hasKeyboardFocus(topToolbar)) showTopBar();
+    });
+    topToolbar.addEventListener("focusout", function () {
+      if (!hoverTop) scheduleHideTopBar(180);
+    });
+
+    bottomController.addEventListener("mouseenter", function () {
+      hoverBottom = true;
+      showBottomBar();
+    });
+    bottomController.addEventListener("mouseleave", function () {
+      hoverBottom = false;
+      scheduleHideBottomBar();
+    });
+    bottomController.addEventListener("click", function (e) {
+      if (e.detail > 0 && document.activeElement && bottomController.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    });
+    bottomController.addEventListener("focusin", function () {
+      if (hasKeyboardFocus(bottomController)) showBottomBar();
+    });
+    bottomController.addEventListener("focusout", function () {
+      if (!hoverBottom) scheduleHideBottomBar(180);
+    });
+
+    // Brief initial reveal so controls are discoverable, then smoothly tuck away
+    scheduleHideTopBar(1400);
+    scheduleHideBottomBar(1400);
+
+    slots.forEach(function (slot, i) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "dot-btn" + (i === 0 ? " active" : "");
       btn.textContent = String(i + 1);
       btn.title = "Slide " + (i + 1) + ": " + (slot.dataset.title || "");
-      btn.addEventListener("click", () => goToSlide(i));
+      btn.addEventListener("click", function () { goToSlide(i); });
       dotsWrap.appendChild(btn);
     });
     const dotBtns = Array.from(dotsWrap.querySelectorAll(".dot-btn"));
 
     function updateUI() {
+      if (viewport.scrollLeft !== 0) viewport.scrollLeft = 0;
       track.style.transform = "translate3d(-" + (current * 100) + "%, 0, 0)";
-      slots.forEach((slot, i) => {
-        slot.inert = i !== current;
-        if (i === current) slot.scrollTop = 0;
+      slots.forEach(function (slot, i) {
+        const isActive = i === current;
+        slot.inert = !isActive;
+        slot.setAttribute("aria-hidden", isActive ? "false" : "true");
+        if (isActive) slot.scrollTop = 0;
       });
-      dotBtns.forEach((b, i) => b.classList.toggle("active", i === current));
+      dotBtns.forEach(function (b, i) {
+        b.classList.toggle("active", i === current);
+      });
       const title = slots[current].dataset.title || "";
       slideStatus.textContent = "Slide " + (current + 1) + " / " + total + (title ? " · " + title : "");
       progressFill.style.width = (((current + 1) / total) * 100) + "%";
@@ -614,27 +735,67 @@
       nextBtn.disabled = sideNext.disabled = current === total - 1;
     }
 
-    window.goToSlide = (i) => { current = Math.max(0, Math.min(total - 1, i)); updateUI(); };
-    window.nextSlide = () => goToSlide(current + 1);
-    window.prevSlide = () => goToSlide(current - 1);
-    window.toggleFullscreen = () => {
-      if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
-      else document.exitFullscreen?.();
-    };
-    window.openLightbox = (src) => { lightboxImg.src = src; lightbox.classList.add("open"); };
-    window.closeLightbox = () => { lightbox.classList.remove("open"); lightboxImg.src = ""; };
+    viewport.addEventListener("scroll", function () {
+      if (viewport.scrollLeft !== 0) viewport.scrollLeft = 0;
+    }, { passive: true });
+    window.addEventListener("resize", function () {
+      if (viewport.scrollLeft !== 0) viewport.scrollLeft = 0;
+    }, { passive: true });
+    window.addEventListener("hashchange", function () {
+      if (window.location.hash === "#contract") goToSlide(total - 1);
+      if (viewport.scrollLeft !== 0) viewport.scrollLeft = 0;
+    });
 
-    document.addEventListener("keydown", (e) => {
+    window.goToSlide = function (i) { current = Math.max(0, Math.min(total - 1, i)); updateUI(); };
+    window.nextSlide = function () { goToSlide(current + 1); };
+    window.prevSlide = function () { goToSlide(current - 1); };
+    window.toggleFullscreen = function () {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+      } else {
+        document.exitFullscreen && document.exitFullscreen();
+      }
+    };
+    window.openLightbox = function (src) {
+      lightboxImg.src = src;
+      lightbox.classList.add("open");
+      topToolbar.classList.remove("is-visible");
+      bottomController.classList.remove("is-visible");
+    };
+    window.closeLightbox = function () {
+      lightbox.classList.remove("open");
+      lightboxImg.src = "";
+    };
+
+    document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && lightbox.classList.contains("open")) return closeLightbox();
       if (e.key === "ArrowRight" || e.key === "PageDown") { e.preventDefault(); nextSlide(); }
       else if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); prevSlide(); }
+      else if (e.key === "Home") { e.preventDefault(); goToSlide(0); }
+      else if (e.key === "End") { e.preventDefault(); goToSlide(total - 1); }
     });
 
-    let touchX = 0;
-    viewport.addEventListener("touchstart", (e) => { touchX = e.changedTouches[0].screenX; }, { passive: true });
-    viewport.addEventListener("touchend", (e) => {
-      const dx = e.changedTouches[0].screenX - touchX;
-      if (Math.abs(dx) > 50) { if (dx < 0) nextSlide(); else prevSlide(); }
+    let touchStartX = 0;
+    let touchStartY = 0;
+    viewport.addEventListener("touchstart", function (e) {
+      touchStartX = e.changedTouches[0].screenX;
+      touchStartY = e.changedTouches[0].screenY;
+      const clientY = e.changedTouches[0].clientY;
+      if (clientY <= 84) {
+        showTopBar();
+        scheduleHideTopBar(3200);
+      } else if (clientY >= window.innerHeight - 96) {
+        showBottomBar();
+        scheduleHideBottomBar(3200);
+      }
+    }, { passive: true });
+    viewport.addEventListener("touchend", function (e) {
+      const dx = e.changedTouches[0].screenX - touchStartX;
+      const dy = e.changedTouches[0].screenY - touchStartY;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        if (dx < 0) nextSlide();
+        else prevSlide();
+      }
     }, { passive: true });
 
     updateUI();
