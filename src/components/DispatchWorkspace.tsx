@@ -8,6 +8,7 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import type { DispatchChannel, StatementMeta } from '../types';
 import { dispatchStatementApi, validateStatementApi, verifyStatementFileApi } from '../utils/api';
@@ -21,7 +22,7 @@ import {
   isValidWhatsappNumber,
 } from '../utils/validation';
 import { NssfLogo } from './NssfLogo';
-import { StatementPreviewModal } from './StatementPreviewModal';
+import { StatementPreviewPage } from './StatementPreviewPage';
 import { toast } from './Toaster';
 import { ActionButton, AlertBanner, ChannelOptionCard, FormInput } from './ui';
 
@@ -29,6 +30,12 @@ type WizardStep = 'select' | 'validate' | 'confirm';
 
 export function DispatchWorkspace() {
   const { settings, setReceipt, navigateTo } = useApp();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const isPreviewPage = location.pathname === ROUTES.PREVIEW;
+  const isValidStatementsRoute =
+    location.pathname === ROUTES.STATEMENTS || location.pathname === ROUTES.PREVIEW;
 
   const [step, setStep] = useState<WizardStep>('select');
   const [channel, setChannel] = useState<DispatchChannel>('email');
@@ -46,7 +53,6 @@ export function DispatchWorkspace() {
   const [errorMsg, setErrorMsg] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const dragDepthRef = useRef(0);
   const uploadCheckIdRef = useRef(0);
@@ -66,8 +72,39 @@ export function DispatchWorkspace() {
   useEffect(() => {
     setErrorMsg('');
     setHoveredCard(null);
-    if (step !== 'confirm') setPreviewOpen(false);
-  }, [step, memberNo, file, email, whatsapp]);
+  }, [step, memberNo, file, email, whatsapp, isPreviewPage]);
+
+  useEffect(() => {
+    if (!isValidStatementsRoute) {
+      navigate(ROUTES.STATEMENTS, { replace: true });
+      return;
+    }
+    if (
+      isPreviewPage &&
+      (step !== 'confirm' || !file || !validatedMeta || !settings.previewBeforeDispatch)
+    ) {
+      navigate(ROUTES.STATEMENTS, { replace: true });
+    }
+  }, [
+    isValidStatementsRoute,
+    isPreviewPage,
+    step,
+    file,
+    validatedMeta,
+    settings.previewBeforeDispatch,
+    navigate,
+  ]);
+
+  useEffect(() => {
+    if (!isPreviewPage) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !submitting) {
+        navigate(ROUTES.STATEMENTS);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isPreviewPage, submitting, navigate]);
 
   useEffect(() => {
     if (step === 'validate') {
@@ -231,10 +268,10 @@ export function DispatchWorkspace() {
   const validateDispatchReady = (activeChannel: DispatchChannel): boolean => {
     if (!file || !validatedMeta) {
       const msg = 'Please attach and validate an official NSSF statement PDF before dispatching.';
-      setPreviewOpen(false);
       setErrorMsg(msg);
       toast.error(getDispatchFailureTitle(activeChannel, msg), msg);
       setStep('validate');
+      if (isPreviewPage) navigate(ROUTES.STATEMENTS, { replace: true });
       return false;
     }
 
@@ -242,9 +279,9 @@ export function DispatchWorkspace() {
       const msg = !settings.emailEnabled
         ? 'Email dispatch is disabled in System Settings.'
         : 'Email (SMTP) is not configured in System Settings.';
-      setPreviewOpen(false);
       setErrorMsg(msg);
       toast.error('Email dispatch failed', msg);
+      if (isPreviewPage) navigate(ROUTES.STATEMENTS, { replace: true });
       return false;
     }
 
@@ -252,16 +289,16 @@ export function DispatchWorkspace() {
       const msg = !settings.whatsappEnabled
         ? 'WhatsApp dispatch is disabled in System Settings.'
         : 'WhatsApp device is not paired in System Settings.';
-      setPreviewOpen(false);
       setErrorMsg(msg);
       toast.error('WhatsApp dispatch failed', msg);
+      if (isPreviewPage) navigate(ROUTES.STATEMENTS, { replace: true });
       return false;
     }
 
     if ((activeChannel === 'email' || activeChannel === 'both') && !isValidEmail(email)) {
       const msg = 'Please enter a valid member email address before sending.';
-      setPreviewOpen(false);
       setErrorMsg(msg);
+      if (isPreviewPage) navigate(ROUTES.STATEMENTS, { replace: true });
       focusFieldById('member-email');
       toast.error('Email dispatch failed', msg);
       return false;
@@ -269,8 +306,8 @@ export function DispatchWorkspace() {
 
     if ((activeChannel === 'whatsapp' || activeChannel === 'both') && !isValidWhatsappNumber(whatsapp)) {
       const msg = 'Please enter a valid member WhatsApp phone number (at least 9 digits).';
-      setPreviewOpen(false);
       setErrorMsg(msg);
+      if (isPreviewPage) navigate(ROUTES.STATEMENTS, { replace: true });
       focusFieldById('member-whatsapp');
       toast.error('WhatsApp dispatch failed', msg);
       return false;
@@ -302,20 +339,20 @@ export function DispatchWorkspace() {
           (data && 'error' in data && typeof (data as { error?: unknown }).error === 'string'
             ? (data as { error: string }).error.trim()
             : '') || 'Statement dispatch failed.';
-        setPreviewOpen(false);
         setErrorMsg(msg);
         toast.error(getDispatchFailureTitle(activeChannel, msg), msg);
         return;
       }
-      setPreviewOpen(false);
       toast.success(
         'Statement dispatched',
         `${data.renamedFile} encrypted and dispatched to member.`
       );
       setReceipt(data);
+      if (isPreviewPage) {
+        navigate(ROUTES.STATEMENTS, { replace: true });
+      }
     } catch (err) {
       const msg = extractDispatchError(err);
-      setPreviewOpen(false);
       setErrorMsg(msg);
       toast.error(getDispatchFailureTitle(activeChannel, msg), msg);
     } finally {
@@ -333,7 +370,10 @@ export function DispatchWorkspace() {
     }
 
     if (settings.previewBeforeDispatch) {
-      setPreviewOpen(true);
+      if (overrideChannel) {
+        setChannel(activeChannel);
+      }
+      navigate(ROUTES.PREVIEW);
       return;
     }
 
@@ -353,7 +393,7 @@ export function DispatchWorkspace() {
     if (key !== 'e' && key !== 'w' && key !== 'b') return;
 
     e.preventDefault();
-    if (uploadBusy || submitting || previewOpen) return;
+    if (uploadBusy || submitting || isPreviewPage) return;
 
     const emailValid = isValidEmail(email);
     const whatsappValid = isValidWhatsappNumber(whatsapp);
@@ -566,8 +606,48 @@ export function DispatchWorkspace() {
 
   const bothHovered = hoveredCard === 'both' && bothReady;
 
+  const showPreviewPage =
+    isPreviewPage &&
+    step === 'confirm' &&
+    Boolean(file) &&
+    Boolean(validatedMeta) &&
+    settings.previewBeforeDispatch;
+
   return (
-    <div className="py-4 sm:py-8 space-y-10">
+    <AnimatePresence mode="wait" initial={false}>
+      {showPreviewPage && validatedMeta ? (
+        <motion.div
+          key="statement-preview-page"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.16, ease: SMOOTH_EASE }}
+        >
+          <StatementPreviewPage
+            file={file}
+            meta={validatedMeta}
+            predictedFilename={predictedFilename}
+            channel={channel}
+            email={email}
+            whatsapp={whatsapp}
+            passwordMode={settings.passwordMode}
+            submitting={submitting}
+            errorMsg={errorMsg}
+            onBack={() => {
+              if (!submitting) navigate(ROUTES.STATEMENTS);
+            }}
+            onConfirmDispatch={() => void executeDispatch()}
+          />
+        </motion.div>
+      ) : (
+        <motion.div
+          key="service-desk-wizard"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.16, ease: SMOOTH_EASE }}
+          className="py-4 sm:py-8 space-y-10"
+        >
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <NssfLogo />
@@ -1082,22 +1162,8 @@ export function DispatchWorkspace() {
           <span>Both</span>
         </span>
       </div>
-
-      {settings.previewBeforeDispatch && (
-        <StatementPreviewModal
-          open={previewOpen}
-          file={file}
-          meta={validatedMeta}
-          predictedFilename={predictedFilename}
-          channel={channel}
-          email={email}
-          whatsapp={whatsapp}
-          passwordMode={settings.passwordMode}
-          submitting={submitting}
-          onClose={() => setPreviewOpen(false)}
-          onConfirmDispatch={() => void executeDispatch()}
-        />
+        </motion.div>
       )}
-    </div>
+    </AnimatePresence>
   );
 }

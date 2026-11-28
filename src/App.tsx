@@ -55,11 +55,16 @@ function AppShell() {
   const requiresInitialSetup =
     authStatusLoaded && (!authStatus?.adminExists || Boolean(pendingRecoveryKey));
 
+  const routeBucket =
+    location.pathname === ROUTES.STATEMENTS || location.pathname === ROUTES.PREVIEW
+      ? ROUTES.STATEMENTS
+      : location.pathname;
+
   const viewKey = !authStatusLoaded
     ? 'loading-init'
     : requiresInitialSetup
       ? `initial-setup:${pendingRecoveryKey ? 'key' : 'form'}`
-      : `${location.pathname}:${receipt ? 'confirmed' : 'form'}:${adminToken ? 'auth' : 'gate'}`;
+      : `${routeBucket}:${receipt ? 'confirmed' : 'form'}:${adminToken ? 'auth' : 'gate'}`;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -93,7 +98,7 @@ function AppShell() {
               ) : (
                 <Routes location={location}>
                   <Route path={ROUTES.ROOT} element={<Navigate to={ROUTES.STATEMENTS} replace />} />
-                  <Route path={ROUTES.STATEMENTS} element={<StatementsPage />} />
+                  <Route path="/statements/*" element={<StatementsPage />} />
                   <Route path={ROUTES.SETTINGS} element={<SettingsPage />} />
                   <Route path={ROUTES.SECURITY} element={<SecurityPage />} />
                   <Route path={ROUTES.AUDIT} element={<AuditPage />} />

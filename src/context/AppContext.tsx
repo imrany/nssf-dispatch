@@ -153,6 +153,8 @@ export function AppProvider({
       routeSuffix = 'Audit Logs';
     } else if (receipt) {
       routeSuffix = 'Dispatch Confirmed';
+    } else if (location.pathname === ROUTES.PREVIEW) {
+      routeSuffix = 'Statement Preview';
     }
     document.title = `${appName} — ${routeSuffix}`;
   }, [appName, authStatus?.adminExists, authStatusLoaded, location.pathname, pendingRecoveryKey, receipt]);
@@ -170,7 +172,7 @@ export function AppProvider({
         return;
       }
 
-      if (targetPath !== ROUTES.STATEMENTS) {
+      if (targetPath !== ROUTES.STATEMENTS && targetPath !== ROUTES.PREVIEW) {
         setReceipt(null);
       } else {
         void refreshSettings(adminToken);

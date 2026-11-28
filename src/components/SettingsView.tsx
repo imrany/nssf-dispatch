@@ -819,26 +819,26 @@ export function SettingsView() {
                 type="checkbox"
                 checked={form.previewBeforeDispatch}
                 disabled={Boolean(togglingFields.previewBeforeDispatch) || saving}
-                onChange={(e) =>
-                  handleAutoToggle(
-                    'previewBeforeDispatch',
-                    e.target.checked,
-                    'Pre-Send Preview Modal'
-                  )
-                }
-                className="mt-1 h-4 w-4 accent-[#006837]"
-              />
-              <div>
-                <div className="text-sm font-semibold text-slate-900">
-                  Pre-Send Preview Modal
-                  {togglingFields.previewBeforeDispatch && (
-                    <span className="ml-2 text-[11px] font-medium text-[#2B7A3B]">Saving...</span>
-                  )}
+                  onChange={(e) =>
+                    handleAutoToggle(
+                      'previewBeforeDispatch',
+                      e.target.checked,
+                      'Pre-Send Preview Page'
+                    )
+                  }
+                  className="mt-1 h-4 w-4 accent-[#006837]"
+                />
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">
+                    Pre-Send Preview Page
+                    {togglingFields.previewBeforeDispatch && (
+                      <span className="ml-2 text-[11px] font-medium text-[#2B7A3B]">Saving...</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    Open a dedicated statement preview page before staff click Encrypt &amp; Send.
+                  </div>
                 </div>
-                <div className="text-xs text-slate-500 mt-0.5">
-                  Show parsed details and PDF preview first before staff click Encrypt &amp; Send.
-                </div>
-              </div>
             </label>
           </div>
         </section>

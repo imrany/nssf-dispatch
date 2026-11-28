@@ -10,6 +10,7 @@ export const DEFAULT_PORTAL_URL = 'https://nssfdigital.enssf.co.ke';
 export const ROUTES = {
   ROOT: '/',
   STATEMENTS: '/statements',
+  PREVIEW: '/statements/preview',
   SETTINGS: '/settings',
   SECURITY: '/settings/security',
   AUDIT: '/audit',
