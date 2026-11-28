@@ -37,9 +37,7 @@
     left: 0;
     right: 0;
     z-index: 60;
-    background: rgba(15, 36, 55, 0.96);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: var(--nssf-navy);
     color: #fff;
     padding: 10px 20px;
     display: flex;
@@ -47,17 +45,20 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    box-shadow: 0 8px 24px rgba(15, 36, 55, 0.24);
-    transform: translateY(calc(-100% - 12px));
+    box-shadow: 0 6px 20px rgba(15, 36, 55, 0.24);
+    transform: translateY(-100%);
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
-    transition: transform 0.36s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.26s ease;
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease, visibility 0s linear 0.32s;
     will-change: transform, opacity;
   }
   .toolbar.is-visible {
     transform: translateY(0);
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease, visibility 0s linear 0s;
   }
   .toolbar-left {
     display: flex;
@@ -261,26 +262,27 @@
     bottom: 0;
     left: 0;
     right: 0;
-    background: rgba(255, 255, 255, 0.96);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: #fff;
     border-top: 1px solid var(--border);
     padding: 10px 20px 12px;
     display: flex;
     flex-direction: column;
     gap: 8px;
     z-index: 60;
-    box-shadow: 0 -8px 24px rgba(15, 36, 55, 0.14);
-    transform: translateY(calc(100% + 12px));
+    box-shadow: 0 -6px 20px rgba(15, 36, 55, 0.14);
+    transform: translateY(100%);
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
-    transition: transform 0.36s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.26s ease;
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease, visibility 0s linear 0.32s;
     will-change: transform, opacity;
   }
   .controller-bar.is-visible {
     transform: translateY(0);
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease, visibility 0s linear 0s;
   }
   .progress-rail {
     width: 100%;
@@ -794,20 +796,47 @@
     let hoverBottom = false;
     let hideTopTimer = null;
     let hideBottomTimer = null;
-    const TOP_EDGE_PX = 72;
-    const BOTTOM_EDGE_PX = 88;
-    const HIDE_DELAY_MS = 380;
+    const TOP_EDGE_PX = 64;
+    const BOTTOM_EDGE_PX = 82;
+    const HIDE_DELAY_MS = 240;
+
+    function hasKeyboardFocus(container) {
+      const active = document.activeElement;
+      if (!active || !container.contains(active)) return false;
+      try {
+        return active.matches(':focus-visible');
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function cancelHideTop() {
+      if (hideTopTimer !== null) {
+        clearTimeout(hideTopTimer);
+        hideTopTimer = null;
+      }
+    }
+
+    function cancelHideBottom() {
+      if (hideBottomTimer !== null) {
+        clearTimeout(hideBottomTimer);
+        hideBottomTimer = null;
+      }
+    }
 
     function showTopBar() {
       if (lightbox.classList.contains('open')) return;
-      clearTimeout(hideTopTimer);
+      cancelHideTop();
       topToolbar.classList.add('is-visible');
     }
 
     function scheduleHideTopBar(delay) {
-      clearTimeout(hideTopTimer);
+      if (!topToolbar.classList.contains('is-visible')) return;
+      if (typeof delay !== 'number' && hideTopTimer !== null) return;
+      cancelHideTop();
       hideTopTimer = setTimeout(function () {
-        if (!hoverTop && !topToolbar.contains(document.activeElement)) {
+        hideTopTimer = null;
+        if (!hoverTop && !hasKeyboardFocus(topToolbar)) {
           topToolbar.classList.remove('is-visible');
         }
       }, typeof delay === 'number' ? delay : HIDE_DELAY_MS);
@@ -815,14 +844,17 @@
 
     function showBottomBar() {
       if (lightbox.classList.contains('open')) return;
-      clearTimeout(hideBottomTimer);
+      cancelHideBottom();
       bottomController.classList.add('is-visible');
     }
 
     function scheduleHideBottomBar(delay) {
-      clearTimeout(hideBottomTimer);
+      if (!bottomController.classList.contains('is-visible')) return;
+      if (typeof delay !== 'number' && hideBottomTimer !== null) return;
+      cancelHideBottom();
       hideBottomTimer = setTimeout(function () {
-        if (!hoverBottom && !bottomController.contains(document.activeElement)) {
+        hideBottomTimer = null;
+        if (!hoverBottom && !hasKeyboardFocus(bottomController)) {
           bottomController.classList.remove('is-visible');
         }
       }, typeof delay === 'number' ? delay : HIDE_DELAY_MS);
@@ -830,8 +862,14 @@
 
     document.addEventListener('mousemove', function (e) {
       if (lightbox.classList.contains('open')) return;
-      const topThreshold = Math.max(TOP_EDGE_PX, topToolbar.offsetHeight + 14);
-      const bottomThreshold = window.innerHeight - Math.max(BOTTOM_EDGE_PX, bottomController.offsetHeight + 14);
+      const topThreshold = topToolbar.classList.contains('is-visible')
+        ? Math.max(TOP_EDGE_PX, topToolbar.offsetHeight + 12)
+        : TOP_EDGE_PX;
+      const bottomThreshold = window.innerHeight - (
+        bottomController.classList.contains('is-visible')
+          ? Math.max(BOTTOM_EDGE_PX, bottomController.offsetHeight + 12)
+          : BOTTOM_EDGE_PX
+      );
 
       if (hoverTop || e.clientY <= topThreshold) {
         showTopBar();
@@ -849,8 +887,8 @@
     document.addEventListener('mouseleave', function () {
       hoverTop = false;
       hoverBottom = false;
-      scheduleHideTopBar(180);
-      scheduleHideBottomBar(180);
+      scheduleHideTopBar(160);
+      scheduleHideBottomBar(160);
     });
 
     topToolbar.addEventListener('mouseenter', function () {
@@ -861,9 +899,16 @@
       hoverTop = false;
       scheduleHideTopBar();
     });
-    topToolbar.addEventListener('focusin', showTopBar);
+    topToolbar.addEventListener('click', function (e) {
+      if (e.detail > 0 && document.activeElement && topToolbar.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    });
+    topToolbar.addEventListener('focusin', function () {
+      if (hasKeyboardFocus(topToolbar)) showTopBar();
+    });
     topToolbar.addEventListener('focusout', function () {
-      scheduleHideTopBar(200);
+      if (!hoverTop) scheduleHideTopBar(180);
     });
 
     bottomController.addEventListener('mouseenter', function () {
@@ -874,14 +919,21 @@
       hoverBottom = false;
       scheduleHideBottomBar();
     });
-    bottomController.addEventListener('focusin', showBottomBar);
+    bottomController.addEventListener('click', function (e) {
+      if (e.detail > 0 && document.activeElement && bottomController.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    });
+    bottomController.addEventListener('focusin', function () {
+      if (hasKeyboardFocus(bottomController)) showBottomBar();
+    });
     bottomController.addEventListener('focusout', function () {
-      scheduleHideBottomBar(200);
+      if (!hoverBottom) scheduleHideBottomBar(180);
     });
 
     // Brief initial reveal so controls are discoverable, then smoothly tuck away
-    scheduleHideTopBar(1500);
-    scheduleHideBottomBar(1500);
+    scheduleHideTopBar(1400);
+    scheduleHideBottomBar(1400);
 
     slots.forEach(function (slot, i) {
       const btn = document.createElement('button');
