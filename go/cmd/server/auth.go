@@ -18,14 +18,11 @@ import (
 )
 
 const (
-	sessionTTL        = 8 * time.Hour
-	maxLoginAttempts  = 10
-	loginWindow       = 15 * time.Minute
-	resetCodeTTL      = 15 * time.Minute
-	resetMaxAttempts  = 5
-	resetCooldown     = 45 * time.Second
-	pbkdf2Iterations  = 100000
-	pbkdf2KeyLen      = 32
+	resetCodeTTL     = 15 * time.Minute
+	resetMaxAttempts = 5
+	resetCooldown    = 45 * time.Second
+	pbkdf2Iterations = 100000
+	pbkdf2KeyLen     = 32
 )
 
 var sessionSecret = func() []byte {
@@ -123,6 +120,12 @@ func VerifyTimingSafeString(input, expected string) bool {
 }
 
 func CreateAdminSessionToken(username string) string {
+	policy := GetSecurityPolicy()
+	ttl := time.Duration(policy.SessionTTLMinutes) * time.Minute
+	if ttl <= 0 {
+		ttl = 8 * time.Hour
+	}
+
 	authMu.Lock()
 	defer authMu.Unlock()
 
@@ -134,7 +137,7 @@ func CreateAdminSessionToken(username string) string {
 	}
 
 	jti := randomHex(18)
-	exp := now.Add(sessionTTL)
+	exp := now.Add(ttl)
 	activeSessions[jti] = sessionEntry{username: username, expiresAt: exp}
 
 	payloadJSON, _ := json.Marshal(map[string]any{
@@ -220,10 +223,67 @@ func RevokeAdminSessionToken(token string) (bool, string) {
 	return false, ""
 }
 
-func RevokeAllAdminSessions() {
+func RevokeAllAdminSessions() int {
 	authMu.Lock()
 	defer authMu.Unlock()
+	count := len(activeSessions)
 	activeSessions = map[string]sessionEntry{}
+	return count
+}
+
+func RevokeOtherAdminSessions(keepToken string) int {
+	keepJti := ""
+	if parts := strings.Split(keepToken, "."); len(parts) == 2 {
+		if rawPayload, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
+			var parsed struct {
+				Jti string `json:"jti"`
+			}
+			if json.Unmarshal(rawPayload, &parsed) == nil {
+				keepJti = parsed.Jti
+			}
+		}
+	}
+
+	authMu.Lock()
+	defer authMu.Unlock()
+	now := time.Now()
+	revoked := 0
+	for k, v := range activeSessions {
+		if !v.expiresAt.After(now) {
+			delete(activeSessions, k)
+			continue
+		}
+		if k != keepJti {
+			delete(activeSessions, k)
+			revoked++
+		}
+	}
+	return revoked
+}
+
+func ActiveAdminSessionCount() int {
+	authMu.Lock()
+	defer authMu.Unlock()
+	now := time.Now()
+	count := 0
+	for k, v := range activeSessions {
+		if !v.expiresAt.After(now) {
+			delete(activeSessions, k)
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func VerifyAdminActiveCredential(acc *AdminAccount, credential string) bool {
+	if acc == nil || credential == "" {
+		return false
+	}
+	if normalizeAuthMode(acc.AuthMode) == "passcode" {
+		return acc.PasscodeHash != "" && acc.PasscodeSalt != "" && VerifyPasswordHash(credential, acc.PasscodeHash, acc.PasscodeSalt)
+	}
+	return acc.PasswordHash != "" && acc.PasswordSalt != "" && VerifyPasswordHash(credential, acc.PasswordHash, acc.PasswordSalt)
 }
 
 const recoveryAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -351,6 +411,12 @@ func RealClientIP(r *http.Request) string {
 }
 
 func CheckLoginRateLimit(ip string) (bool, int) {
+	policy := GetSecurityPolicy()
+	maxAttempts := policy.MaxLoginAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 10
+	}
+
 	authMu.Lock()
 	defer authMu.Unlock()
 	rec, ok := loginAttempts[ip]
@@ -358,7 +424,7 @@ func CheckLoginRateLimit(ip string) (bool, int) {
 	if !ok || !rec.resetAt.After(now) {
 		return true, 0
 	}
-	if rec.count >= maxLoginAttempts {
+	if rec.count >= maxAttempts {
 		sec := int(rec.resetAt.Sub(now).Seconds())
 		if sec < 1 {
 			sec = 1
@@ -369,12 +435,18 @@ func CheckLoginRateLimit(ip string) (bool, int) {
 }
 
 func RecordFailedLogin(ip string) {
+	policy := GetSecurityPolicy()
+	window := time.Duration(policy.LockoutMinutes) * time.Minute
+	if window <= 0 {
+		window = 15 * time.Minute
+	}
+
 	authMu.Lock()
 	defer authMu.Unlock()
 	now := time.Now()
 	rec, ok := loginAttempts[ip]
 	if !ok || !rec.resetAt.After(now) {
-		loginAttempts[ip] = loginAttemptRecord{count: 1, resetAt: now.Add(loginWindow)}
+		loginAttempts[ip] = loginAttemptRecord{count: 1, resetAt: now.Add(window)}
 	} else {
 		rec.count++
 		loginAttempts[ip] = rec

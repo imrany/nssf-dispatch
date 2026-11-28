@@ -1,7 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from '../components/Toaster';
-import type { AdminAuthStatus, AppSettings, DispatchReceipt, PendingSettingsAction } from '../types';
+import type {
+  AdminAuthMode,
+  AdminAuthStatus,
+  AppSettings,
+  DispatchReceipt,
+  PendingSettingsAction,
+} from '../types';
 import { fetchAuthStatusApi, fetchSettingsApi, logoutAdminApi } from '../utils/api';
 import {
   APP_NAME,
@@ -30,21 +36,30 @@ export interface AppContextValue {
   refreshAuthStatus: () => Promise<AdminAuthStatus | null>;
   adminToken: string | null;
   adminUsername: string | null;
+  adminAuthMode: AdminAuthMode;
   adminRecoveryEmail: string;
+  idleLockMinutes: number;
+  setIdleLockMinutes: React.Dispatch<React.SetStateAction<number>>;
   pendingRecoveryKey: string | null;
   clearPendingRecoveryKey: (targetPath?: string) => void;
   authenticateAdmin: (
     token: string,
     username: string,
     fullSettings: AppSettings,
-    options?: { recoveryEmail?: string; recoveryKey?: string | null }
+    options?: {
+      authMode?: AdminAuthMode;
+      recoveryEmail?: string;
+      recoveryKey?: string | null;
+      idleLockMinutes?: number;
+    }
   ) => void;
   updateAdminCredentialsSession: (
     token: string,
     username: string,
-    recoveryEmail: string
+    recoveryEmail: string,
+    authMode?: AdminAuthMode
   ) => void;
-  logoutAdmin: (reason?: 'manual' | 'expired') => void;
+  logoutAdmin: (reason?: 'manual' | 'expired' | 'idle') => void;
   settingsDirty: boolean;
   setSettingsDirty: React.Dispatch<React.SetStateAction<boolean>>;
   pendingNavigation: PendingSettingsAction | null;
@@ -75,7 +90,9 @@ export function AppProvider({
 
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [adminUsername, setAdminUsername] = useState<string | null>(null);
+  const [adminAuthMode, setAdminAuthMode] = useState<AdminAuthMode>('password');
   const [adminRecoveryEmail, setAdminRecoveryEmail] = useState('');
+  const [idleLockMinutes, setIdleLockMinutes] = useState(0);
   const [pendingRecoveryKey, setPendingRecoveryKey] = useState<string | null>(null);
 
   const refreshAuthStatus = useCallback(async (): Promise<AdminAuthStatus | null> => {
@@ -83,6 +100,12 @@ export function AppProvider({
     try {
       const data = await fetchAuthStatusApi();
       setAuthStatus(data);
+      if (data.authMode) {
+        setAdminAuthMode(data.authMode);
+      }
+      if (typeof data.idleLockMinutes === 'number') {
+        setIdleLockMinutes(data.idleLockMinutes);
+      }
       setAuthStatusLoaded(true);
       return data;
     } catch (err) {
@@ -163,22 +186,34 @@ export function AppProvider({
       token: string,
       username: string,
       fullSettings: AppSettings,
-      options?: { recoveryEmail?: string; recoveryKey?: string | null }
+      options?: {
+        authMode?: AdminAuthMode;
+        recoveryEmail?: string;
+        recoveryKey?: string | null;
+        idleLockMinutes?: number;
+      }
     ) => {
       const recEmail = options?.recoveryEmail ?? '';
+      const mode: AdminAuthMode = options?.authMode ?? 'password';
       setAdminToken(token);
       setAdminUsername(username);
+      setAdminAuthMode(mode);
       setAdminRecoveryEmail(recEmail);
+      if (typeof options?.idleLockMinutes === 'number') {
+        setIdleLockMinutes(options.idleLockMinutes);
+      }
       setSettings(fullSettings);
       setAuthStatus((prev) => ({
         adminExists: true,
         authenticated: true,
         username,
+        authMode: mode,
         envPasscodeConfigured: prev?.envPasscodeConfigured ?? false,
         hasRecoveryEmail: Boolean(recEmail) || Boolean(prev?.hasRecoveryEmail),
         hasRecoveryKey: Boolean(options?.recoveryKey) || Boolean(prev?.hasRecoveryKey),
         smtpConfigured: prev?.smtpConfigured ?? false,
         recoveryEmail: recEmail,
+        idleLockMinutes: options?.idleLockMinutes ?? prev?.idleLockMinutes ?? 0,
       }));
       if (options?.recoveryKey) {
         setPendingRecoveryKey(options.recoveryKey);
@@ -198,15 +233,19 @@ export function AppProvider({
   );
 
   const updateAdminCredentialsSession = useCallback(
-    (token: string, username: string, recoveryEmail: string) => {
+    (token: string, username: string, recoveryEmail: string, authMode?: AdminAuthMode) => {
       setAdminToken(token);
       setAdminUsername(username);
       setAdminRecoveryEmail(recoveryEmail);
+      if (authMode) {
+        setAdminAuthMode(authMode);
+      }
       setAuthStatus((prev) =>
         prev
           ? {
               ...prev,
               username,
+              authMode: authMode ?? prev.authMode,
               recoveryEmail,
               hasRecoveryEmail: Boolean(recoveryEmail),
             }
@@ -217,7 +256,7 @@ export function AppProvider({
   );
 
   const logoutAdmin = useCallback(
-    (reason: 'manual' | 'expired' = 'manual') => {
+    (reason: 'manual' | 'expired' | 'idle' = 'manual') => {
       const tokenToRevoke = adminToken;
       setAdminToken(null);
       setAdminUsername(null);
@@ -234,12 +273,43 @@ export function AppProvider({
 
       if (reason === 'expired') {
         toast.warning('Session expired', 'Please sign in again to access System Settings.');
+      } else if (reason === 'idle') {
+        toast.warning('Settings auto-locked', 'Administrator session locked due to inactivity.');
       } else {
         toast.success('Settings locked', 'Administrator session ended.');
       }
     },
     [adminToken]
   );
+
+  // Automatic inactivity lock for authenticated admin sessions when enabled in Security Policy
+  useEffect(() => {
+    if (!adminToken || idleLockMinutes <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeoutMs = idleLockMinutes * 60 * 1000;
+
+    const resetTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        logoutAdmin('idle');
+      }, timeoutMs);
+    };
+
+    const events: Array<keyof WindowEventMap> = [
+      'mousemove',
+      'mousedown',
+      'keydown',
+      'touchstart',
+      'scroll',
+    ];
+    events.forEach((evt) => window.addEventListener(evt, resetTimer, { passive: true }));
+    resetTimer();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      events.forEach((evt) => window.removeEventListener(evt, resetTimer));
+    };
+  }, [adminToken, idleLockMinutes, logoutAdmin]);
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -259,7 +329,10 @@ export function AppProvider({
       refreshAuthStatus,
       adminToken,
       adminUsername,
+      adminAuthMode,
       adminRecoveryEmail,
+      idleLockMinutes,
+      setIdleLockMinutes,
       pendingRecoveryKey,
       clearPendingRecoveryKey,
       authenticateAdmin,
@@ -282,7 +355,9 @@ export function AppProvider({
       refreshAuthStatus,
       adminToken,
       adminUsername,
+      adminAuthMode,
       adminRecoveryEmail,
+      idleLockMinutes,
       pendingRecoveryKey,
       clearPendingRecoveryKey,
       authenticateAdmin,

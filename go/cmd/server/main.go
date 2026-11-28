@@ -940,17 +940,26 @@ func main() {
 		})
 	})
 
-	// Admin Auth endpoints
+	// Admin Auth & Security endpoints
 	mux.HandleFunc("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
 		envPasscode := strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE"))
 		envConfigured := envPasscode != ""
 		acc, _ := GetAdminAccount()
 		adminExists := envConfigured || acc != nil
+		authMode := "password"
+		if envConfigured {
+			authMode = "passcode"
+		} else if acc != nil {
+			authMode = normalizeAuthMode(acc.AuthMode)
+		}
 		valid, username := VerifyAdminSessionToken(ExtractBearerToken(r))
+		policy := GetSecurityPolicy()
 		var userVal any = nil
 		var recoveryEmailVal any = nil
+		var idleLockVal any = nil
 		if valid && username != "" {
 			userVal = username
+			idleLockVal = policy.IdleLockMinutes
 			if acc != nil {
 				recoveryEmailVal = acc.RecoveryEmail
 			}
@@ -961,11 +970,13 @@ func main() {
 			"adminExists":           adminExists,
 			"authenticated":         valid,
 			"username":              userVal,
+			"authMode":              authMode,
 			"envPasscodeConfigured": envConfigured,
 			"hasRecoveryEmail":      acc != nil && strings.TrimSpace(acc.RecoveryEmail) != "",
 			"hasRecoveryKey":        acc != nil && strings.TrimSpace(acc.RecoveryHash) != "",
 			"smtpConfigured":        smtpConfigured,
 			"recoveryEmail":         recoveryEmailVal,
+			"idleLockMinutes":       idleLockVal,
 		})
 	})
 
@@ -981,8 +992,10 @@ func main() {
 			return
 		}
 		var body struct {
+			AuthMode      string `json:"authMode"`
 			Username      string `json:"username"`
 			Password      string `json:"password"`
+			Passcode      string `json:"passcode"`
 			RecoveryEmail string `json:"recoveryEmail"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -990,39 +1003,66 @@ func main() {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
+		authMode := normalizeAuthMode(body.AuthMode)
 		username := strings.TrimSpace(body.Username)
-		if !usernameRe.MatchString(username) {
-			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Invalid administrator username format during setup")
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
-			return
-		}
 		recoveryEmail := strings.TrimSpace(body.RecoveryEmail)
 		if recoveryEmail != "" && !emailRe.MatchString(recoveryEmail) {
-			LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", recoveryEmail, "", "SETUP_FAILED", "Invalid recovery email format during setup")
+			LogSystemAudit("AUTH", defaultStr(username, "admin"), ip, "ADMIN_SETUP", recoveryEmail, "", "SETUP_FAILED", "Invalid recovery email format during setup")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid recovery email address."})
 			return
 		}
-		if len(body.Password) < 8 || len(body.Password) > 128 {
-			LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Password did not meet length policy (8-128 chars) during setup")
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin password must be between 8 and 128 characters."})
-			return
+
+		var created *AdminAccount
+		var recoveryKey string
+		var err error
+
+		if authMode == "passcode" {
+			if username == "" {
+				username = "admin"
+			} else if !usernameRe.MatchString(username) {
+				LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Invalid administrator label format during passcode setup")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "Administrator label must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
+				return
+			}
+			passcode := strings.TrimSpace(defaultStr(body.Passcode, body.Password))
+			if len(passcode) < 6 || len(passcode) > 64 {
+				LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Passcode did not meet length policy (6-64 chars) during setup")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin passcode must be between 6 and 64 characters."})
+				return
+			}
+			created, recoveryKey, err = CreateInitialAdmin("passcode", username, "", passcode, recoveryEmail)
+		} else {
+			if !usernameRe.MatchString(username) {
+				LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Invalid administrator username format during setup")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
+				return
+			}
+			if len(body.Password) < 8 || len(body.Password) > 128 {
+				LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Password did not meet length policy (8-128 chars) during setup")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "Admin password must be between 8 and 128 characters."})
+				return
+			}
+			created, recoveryKey, err = CreateInitialAdmin("password", username, body.Password, "", recoveryEmail)
 		}
-		created, recoveryKey, err := CreateInitialAdmin(username, body.Password, recoveryEmail)
+
 		if err != nil {
-			LogSystemAudit("AUTH", username, ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Administrator setup conflict: "+err.Error())
+			LogSystemAudit("AUTH", defaultStr(username, "admin"), ip, "ADMIN_SETUP", ip, "", "SETUP_FAILED", "Administrator setup conflict: "+err.Error())
 			writeJSON(w, 409, map[string]any{"ok": false, "error": "Administrator setup already completed. Please sign in."})
 			return
 		}
 		token := CreateAdminSessionToken(created.Username)
 		pub, _ := GetPublicSettings()
-		LogSystemAudit("AUTH", created.Username, ip, "ADMIN_SETUP", defaultStr(created.RecoveryEmail, ip), "", "ADMIN_CREATED", "Initial administrator account created and signed in")
+		policy := GetSecurityPolicy()
+		LogSystemAudit("AUTH", created.Username, ip, "ADMIN_SETUP", defaultStr(created.RecoveryEmail, ip), "", "ADMIN_CREATED", fmt.Sprintf("Initial administrator account created (%s login) and signed in", created.AuthMode))
 		writeJSON(w, 201, map[string]any{
-			"ok":            true,
-			"token":         token,
-			"username":      created.Username,
-			"recoveryEmail": created.RecoveryEmail,
-			"recoveryKey":   recoveryKey,
-			"settings":      pub,
+			"ok":              true,
+			"token":           token,
+			"username":        created.Username,
+			"authMode":        created.AuthMode,
+			"recoveryEmail":   created.RecoveryEmail,
+			"recoveryKey":     recoveryKey,
+			"idleLockMinutes": policy.IdleLockMinutes,
+			"settings":        pub,
 		})
 	})
 
@@ -1042,63 +1082,87 @@ func main() {
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			Passcode string `json:"passcode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			LogSystemAudit("AUTH", "Unknown", auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", "Invalid JSON payload on login attempt")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
-		attemptedUser := defaultStr(strings.TrimSpace(body.Username), "unknown")
+		attemptedUser := defaultStr(strings.TrimSpace(body.Username), "admin")
+		policy := GetSecurityPolicy()
 
 		envPasscode := strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE"))
 		if envPasscode != "" {
-			if body.Password == "" || !VerifyTimingSafeString(body.Password, envPasscode) {
+			candidate := defaultStr(body.Passcode, body.Password)
+			if candidate == "" || !VerifyTimingSafeString(candidate, envPasscode) {
 				RecordFailedLogin(rateIP)
 				LogSystemAudit("AUTH", attemptedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", fmt.Sprintf("Failed administrator sign-in attempt for %q (invalid passcode)", attemptedUser))
-				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid administrator credentials."})
+				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid administrator passcode."})
 				return
 			}
 			ClearFailedLogins(rateIP)
 			user := defaultStr(strings.TrimSpace(body.Username), "admin")
 			token := CreateAdminSessionToken(user)
 			pub, _ := GetPublicSettings()
-			LogSystemAudit("AUTH", user, auditIP, "LOGIN", auditIP, "", "LOGIN_SUCCESS", fmt.Sprintf("Administrator %q signed in", user))
-			writeJSON(w, 200, map[string]any{"ok": true, "token": token, "username": user, "settings": pub})
+			LogSystemAudit("AUTH", user, auditIP, "LOGIN", auditIP, "", "LOGIN_SUCCESS", fmt.Sprintf("Administrator %q signed in via passcode", user))
+			writeJSON(w, 200, map[string]any{
+				"ok":              true,
+				"token":           token,
+				"username":        user,
+				"authMode":        "passcode",
+				"idleLockMinutes": policy.IdleLockMinutes,
+				"settings":        pub,
+			})
 			return
 		}
 
-		if !HasAdminAccount() {
+		acc, _ := GetAdminAccount()
+		if acc == nil {
 			LogSystemAudit("AUTH", attemptedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", "Sign-in attempted before initial administrator setup was completed")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "No administrator account exists yet. Complete initial admin setup first."})
 			return
 		}
 
-		ok, matchedUser := VerifyStoredAdminCredentials(body.Username, body.Password)
-		if !ok {
-			RecordFailedLogin(rateIP)
-			LogSystemAudit("AUTH", attemptedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", fmt.Sprintf("Failed administrator sign-in attempt for username %q (invalid username or password)", attemptedUser))
-			writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid username or password."})
-			return
+		mode := normalizeAuthMode(acc.AuthMode)
+		var matchedUser string
+		if mode == "passcode" {
+			candidate := defaultStr(body.Passcode, body.Password)
+			ok, matched := VerifyStoredAdminPasscode(candidate)
+			if !ok {
+				RecordFailedLogin(rateIP)
+				LogSystemAudit("AUTH", defaultStr(acc.Username, "admin"), auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", "Failed administrator sign-in attempt (invalid passcode)")
+				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid administrator passcode."})
+				return
+			}
+			matchedUser = matched
+		} else {
+			ok, matched := VerifyStoredAdminCredentials(body.Username, body.Password)
+			if !ok {
+				RecordFailedLogin(rateIP)
+				LogSystemAudit("AUTH", attemptedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_FAILED", fmt.Sprintf("Failed administrator sign-in attempt for username %q (invalid username or password)", attemptedUser))
+				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid username or password."})
+				return
+			}
+			matchedUser = matched
 		}
+
 		ClearFailedLogins(rateIP)
 		token := CreateAdminSessionToken(matchedUser)
 		pub, _ := GetPublicSettings()
-		acc, _ := GetAdminAccount()
-		recEmail := ""
-		if acc != nil {
-			recEmail = acc.RecoveryEmail
-		}
-		LogSystemAudit("AUTH", matchedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_SUCCESS", fmt.Sprintf("Administrator %q signed in", matchedUser))
+		LogSystemAudit("AUTH", matchedUser, auditIP, "LOGIN", auditIP, "", "LOGIN_SUCCESS", fmt.Sprintf("Administrator %q signed in (%s)", matchedUser, mode))
 		writeJSON(w, 200, map[string]any{
-			"ok":            true,
-			"token":         token,
-			"username":      matchedUser,
-			"recoveryEmail": recEmail,
-			"settings":      pub,
+			"ok":              true,
+			"token":           token,
+			"username":        matchedUser,
+			"authMode":        mode,
+			"recoveryEmail":   acc.RecoveryEmail,
+			"idleLockMinutes": policy.IdleLockMinutes,
+			"settings":        pub,
 		})
 	})
 
-	mux.HandleFunc("/api/auth/forgot-password", func(w http.ResponseWriter, r *http.Request) {
+	handleForgotCredential := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1106,13 +1170,13 @@ func main() {
 		rateIP := ClientIP(r)
 		auditIP := RealClientIP(r)
 		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
-			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", "Password recovery unavailable while managed passcode override is active")
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", "Credential recovery unavailable while managed passcode override is active")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Server passcode is managed via NSSF_ADMIN_PASSCODE environment variable."})
 			return
 		}
 		allowed, retryAfter := CheckLoginRateLimit(rateIP)
 		if !allowed {
-			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", fmt.Sprintf("Password recovery rate-limited (retry in %ds)", retryAfter))
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", fmt.Sprintf("Credential recovery rate-limited (retry in %ds)", retryAfter))
 			writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Too many recovery requests. Try again in %d seconds.", retryAfter)})
 			return
 		}
@@ -1121,56 +1185,71 @@ func main() {
 			RecoveryEmail string `json:"recoveryEmail"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", "Invalid JSON body on password recovery request")
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "RESET_REQUEST_FAILED", "Invalid JSON body on credential recovery request")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
 		username := strings.TrimSpace(body.Username)
 		recoveryEmail := strings.TrimSpace(body.RecoveryEmail)
-		if username == "" || !emailRe.MatchString(recoveryEmail) {
-			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", "Password recovery requested with missing username or invalid email")
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter both your administrator username and recovery email address."})
+		acc, _ := GetAdminAccount()
+		isPasscodeMode := acc != nil && normalizeAuthMode(acc.AuthMode) == "passcode"
+
+		if !emailRe.MatchString(recoveryEmail) || (!isPasscodeMode && username == "") {
+			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", "Credential recovery requested with missing fields or invalid email")
+			msg := "Please enter both your administrator username and recovery email address."
+			if isPasscodeMode {
+				msg = "Please enter a valid recovery email address."
+			}
+			writeJSON(w, 400, map[string]any{"ok": false, "error": msg})
 			return
 		}
 
-		acc, _ := GetAdminAccount()
 		cfg, _ := GetRawSettings()
-		genericMsg := "If the administrator username and recovery email match our records and SMTP is configured, a password reset code has been sent."
+		genericMsg := "If the recovery details match our records and SMTP is configured, a verification code has been sent to your recovery email."
 
+		usernameMatches := isPasscodeMode || (acc != nil && strings.EqualFold(acc.Username, username))
 		if acc != nil &&
-			strings.EqualFold(acc.Username, username) &&
+			usernameMatches &&
 			acc.RecoveryEmail != "" &&
 			strings.EqualFold(acc.RecoveryEmail, recoveryEmail) &&
 			strings.TrimSpace(cfg.SMTPHost) != "" &&
-			strings.TrimSpace(cfg.SMTPUser) != "" {
+			strings.TrimSpace(cfg.SMTPUser) != "" &&
+			strings.TrimSpace(cfg.SMTPPass) != "" {
 			code, cooldownSec, ok := CreatePasswordResetCode()
 			if !ok {
-				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", fmt.Sprintf("Reset code request throttled (%ds cooldown remaining)", cooldownSec))
+				LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", fmt.Sprintf("Reset code request throttled (%ds cooldown remaining)", cooldownSec))
 				writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Please wait %d seconds before requesting another reset code.", cooldownSec)})
 				return
 			}
-			subject := fmt.Sprintf("%s — Administrator Password Reset Code", appName)
+			credLabel := "Password"
+			if isPasscodeMode {
+				credLabel = "Passcode"
+			}
+			subject := fmt.Sprintf("%s — Administrator %s Reset Code", appName, credLabel)
 			emailBody := fmt.Sprintf(
-				"NSSF Digital Statement Dispatch — Administrator Password Reset\n\n"+
-					"A password reset was requested for administrator account: %s\n\n"+
+				"NSSF Digital Statement Dispatch — Administrator %s Recovery\n\n"+
+					"A %s reset was requested for administrator account: %s\n\n"+
 					"Verification Code: %s\n"+
+					"Enter this verification code on the portal sign-in screen to set a new %s.\n"+
 					"This code expires in 15 minutes and can only be used once.\n\n"+
-					"If you did not request this reset, ignore this message and review local workstation access.",
-				acc.Username, code,
+					"If you did not request this recovery, ignore this message and review local workstation access.",
+				credLabel, strings.ToLower(credLabel), acc.Username, code, strings.ToLower(credLabel),
 			)
 			if err := SendPlainTextEmail(cfg, acc.RecoveryEmail, subject, emailBody); err != nil {
 				log.Printf("[AUTH] Failed to send admin reset email: %v", err)
-				LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", acc.RecoveryEmail, "", "RESET_EMAIL_FAILED", "Failed to send password reset email: "+err.Error())
+				LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", acc.RecoveryEmail, "", "RESET_EMAIL_FAILED", fmt.Sprintf("Failed to send %s reset email: %s", strings.ToLower(credLabel), err.Error()))
 				writeJSON(w, 502, map[string]any{"ok": false, "error": "Failed to deliver verification code via SMTP. Use your Backup Recovery Key instead."})
 				return
 			}
-			LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", acc.RecoveryEmail, "", "RESET_CODE_SENT", "Password reset verification code emailed to administrator recovery address")
+			LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", acc.RecoveryEmail, "", "RESET_CODE_SENT", fmt.Sprintf("%s reset verification code emailed to administrator recovery address", credLabel))
 		} else {
-			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", "Password reset requested with unmatched username/recovery email or unconfigured SMTP")
+			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), auditIP, "RECOVERY", recoveryEmail, "", "RESET_REQUEST_FAILED", "Credential reset requested with unmatched details or unconfigured SMTP")
 		}
 
 		writeJSON(w, 200, map[string]any{"ok": true, "message": genericMsg})
-	})
+	}
+	mux.HandleFunc("/api/auth/forgot-password", handleForgotCredential)
+	mux.HandleFunc("/api/auth/forgot-passcode", handleForgotCredential)
 
 	mux.HandleFunc("/api/auth/reset-password", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1180,13 +1259,13 @@ func main() {
 		rateIP := ClientIP(r)
 		auditIP := RealClientIP(r)
 		if strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != "" {
-			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset blocked while managed passcode override is active")
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Credential reset blocked while managed passcode override is active")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Server passcode is managed via NSSF_ADMIN_PASSCODE environment variable."})
 			return
 		}
 		allowed, retryAfter := CheckLoginRateLimit(rateIP)
 		if !allowed {
-			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Password reset rate-limited (retry in %ds)", retryAfter))
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Credential reset rate-limited (retry in %ds)", retryAfter))
 			writeJSON(w, 429, map[string]any{"ok": false, "error": fmt.Sprintf("Too many failed attempts. Try again in %d seconds.", retryAfter)})
 			return
 		}
@@ -1196,36 +1275,53 @@ func main() {
 			Code        string `json:"code"`
 			RecoveryKey string `json:"recoveryKey"`
 			NewPassword string `json:"newPassword"`
+			NewPasscode string `json:"newPasscode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Invalid JSON payload on password reset")
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Invalid JSON payload on credential reset")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
 			return
 		}
+
+		acc, _ := GetAdminAccount()
+		if acc == nil {
+			LogSystemAudit("AUTH", "Anonymous", auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Credential reset attempted when no administrator account exists")
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "No administrator account exists yet."})
+			return
+		}
+
+		isPasscodeMode := normalizeAuthMode(acc.AuthMode) == "passcode"
 		username := strings.TrimSpace(body.Username)
-		if !usernameRe.MatchString(username) {
+		if isPasscodeMode {
+			username = acc.Username
+		} else if !usernameRe.MatchString(username) {
 			LogSystemAudit("AUTH", defaultStr(username, "Anonymous"), auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset rejected due to invalid username format")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid administrator username."})
 			return
 		}
-		if len(body.NewPassword) < 8 || len(body.NewPassword) > 128 {
-			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset rejected: new password outside 8-128 character range")
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
-			return
-		}
-		acc, _ := GetAdminAccount()
-		if acc == nil {
-			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset attempted when no administrator account exists")
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "No administrator account exists yet."})
-			return
+
+		newSecret := body.NewPassword
+		if isPasscodeMode {
+			newSecret = strings.TrimSpace(defaultStr(body.NewPasscode, body.NewPassword))
+			if len(newSecret) < 6 || len(newSecret) > 64 {
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSCODE_RESET_FAILED", "Passcode reset rejected: new passcode outside 6-64 character range")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "New passcode must be between 6 and 64 characters."})
+				return
+			}
+		} else {
+			if len(newSecret) < 8 || len(newSecret) > 128 {
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Password reset rejected: new password outside 8-128 character range")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
+				return
+			}
 		}
 
 		method := strings.TrimSpace(body.Method)
 		methodLabel := "email verification code"
 		if method == "email_code" {
-			if !strings.EqualFold(acc.Username, username) {
+			if !isPasscodeMode && !strings.EqualFold(acc.Username, username) {
 				RecordFailedLogin(rateIP)
-				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Email-code password reset failed for unknown username %q", username))
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Email-code reset failed for unknown username %q", username))
 				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid username or verification code."})
 				return
 			}
@@ -1240,17 +1336,37 @@ func main() {
 			methodLabel = "backup recovery key"
 			if !VerifyAdminRecoveryKey(username, body.RecoveryKey) {
 				RecordFailedLogin(rateIP)
-				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", fmt.Sprintf("Backup recovery key rejected for username %q", username))
-				writeJSON(w, 401, map[string]any{"ok": false, "error": "Invalid administrator username or backup recovery key."})
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Backup recovery key rejected")
+				errText := "Invalid administrator username or backup recovery key."
+				if isPasscodeMode {
+					errText = "Invalid backup recovery key."
+				}
+				writeJSON(w, 401, map[string]any{"ok": false, "error": errText})
 				return
 			}
 		} else {
-			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Unsupported password reset method: "+method)
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid password reset method."})
+			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "PASSWORD_RESET_FAILED", "Unsupported reset method: "+method)
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid recovery method."})
 			return
 		}
 
-		if err := UpdateAdminPassword(body.NewPassword); err != nil {
+		if isPasscodeMode {
+			if err := UpdateAdminPasscode(newSecret); err != nil {
+				LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "ERROR", "Failed saving updated administrator passcode: "+err.Error())
+				writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to update administrator passcode."})
+				return
+			}
+			ClearFailedLogins(rateIP)
+			RevokeAllAdminSessions()
+			LogSystemAudit("AUTH", acc.Username, auditIP, "RECOVERY", auditIP, "", "PASSCODE_RESET", fmt.Sprintf("Administrator passcode reset via %s; all active sessions revoked", methodLabel))
+			writeJSON(w, 200, map[string]any{
+				"ok":      true,
+				"message": "Administrator passcode updated. Sign in with your new passcode.",
+			})
+			return
+		}
+
+		if err := UpdateAdminPassword(newSecret); err != nil {
 			LogSystemAudit("AUTH", username, auditIP, "RECOVERY", auditIP, "", "ERROR", "Failed saving updated administrator password: "+err.Error())
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to update administrator password."})
 			return
@@ -1276,10 +1392,14 @@ func main() {
 			return
 		}
 		var body struct {
-			CurrentPassword string `json:"currentPassword"`
-			NewUsername     string `json:"newUsername"`
-			RecoveryEmail   string `json:"recoveryEmail"`
-			NewPassword     string `json:"newPassword"`
+			AuthMode          string `json:"authMode"`
+			CurrentCredential string `json:"currentCredential"`
+			CurrentPassword   string `json:"currentPassword"`
+			CurrentPasscode   string `json:"currentPasscode"`
+			NewUsername       string `json:"newUsername"`
+			RecoveryEmail     string `json:"recoveryEmail"`
+			NewPassword       string `json:"newPassword"`
+			NewPasscode       string `json:"newPasscode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Invalid JSON body when updating credentials")
@@ -1292,47 +1412,91 @@ func main() {
 			writeJSON(w, 404, map[string]any{"ok": false, "error": "Administrator account not found."})
 			return
 		}
-		if body.CurrentPassword == "" || !VerifyPasswordHash(body.CurrentPassword, acc.PasswordHash, acc.PasswordSalt) {
-			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: current password was incorrect")
-			writeJSON(w, 401, map[string]any{"ok": false, "error": "Current password is incorrect."})
+
+		currentMode := normalizeAuthMode(acc.AuthMode)
+		currentCred := defaultStr(body.CurrentCredential, defaultStr(body.CurrentPassword, body.CurrentPasscode))
+		if !VerifyAdminActiveCredential(acc, currentCred) {
+			credName := "password"
+			if currentMode == "passcode" {
+				credName = "passcode"
+			}
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", fmt.Sprintf("Rejected credential change: current %s was incorrect", credName))
+			writeJSON(w, 401, map[string]any{"ok": false, "error": fmt.Sprintf("Current %s is incorrect.", credName)})
 			return
 		}
-		newUser := strings.TrimSpace(body.NewUsername)
-		if newUser == "" {
-			newUser = acc.Username
+
+		targetMode := currentMode
+		if strings.TrimSpace(body.AuthMode) != "" {
+			targetMode = normalizeAuthMode(body.AuthMode)
 		}
-		if !usernameRe.MatchString(newUser) {
-			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: invalid username format")
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "Username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
-			return
-		}
+
 		recEmail := strings.TrimSpace(body.RecoveryEmail)
 		if recEmail != "" && !emailRe.MatchString(recEmail) {
 			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", recEmail, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: invalid recovery email")
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "Please enter a valid recovery email address."})
 			return
 		}
-		if body.NewPassword != "" && (len(body.NewPassword) < 8 || len(body.NewPassword) > 128) {
-			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: new password outside 8-128 character range")
-			writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
+
+		newUser := strings.TrimSpace(body.NewUsername)
+		if newUser == "" {
+			newUser = defaultStr(acc.Username, "admin")
+		}
+		if !usernameRe.MatchString(newUser) {
+			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: invalid username format")
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Username must be 3 to 64 characters (letters, numbers, ., _, @, -)."})
 			return
 		}
 
-		updated, err := UpdateAdminCredentials(newUser, recEmail, body.NewPassword)
+		newPassword := body.NewPassword
+		newPasscode := strings.TrimSpace(body.NewPasscode)
+
+		if targetMode == "passcode" {
+			switchingToPasscode := currentMode != "passcode"
+			if switchingToPasscode && newPasscode == "" {
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "Enter a new passcode (6 to 64 characters) to switch to Passcode Login."})
+				return
+			}
+			if newPasscode != "" && (len(newPasscode) < 6 || len(newPasscode) > 64) {
+				LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: new passcode outside 6-64 character range")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "New passcode must be between 6 and 64 characters."})
+				return
+			}
+			newPassword = ""
+		} else {
+			switchingToPassword := currentMode != "password"
+			if switchingToPassword && newPassword == "" {
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "Enter a new password (8 to 128 characters) to switch to Username & Password Login."})
+				return
+			}
+			if newPassword != "" && (len(newPassword) < 8 || len(newPassword) > 128) {
+				LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "CREDENTIALS_UPDATE_FAILED", "Rejected credential change: new password outside 8-128 character range")
+				writeJSON(w, 400, map[string]any{"ok": false, "error": "New password must be between 8 and 128 characters."})
+				return
+			}
+			newPasscode = ""
+		}
+
+		updated, err := UpdateAdminCredentials(targetMode, newUser, recEmail, newPassword, newPasscode)
 		if err != nil {
 			LogSystemAudit("AUTH", currentUser, ip, "SECURITY", ip, "", "ERROR", "Failed to save updated administrator credentials: "+err.Error())
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to update administrator credentials."})
 			return
 		}
 		var changedParts []string
+		if currentMode != updated.AuthMode {
+			changedParts = append(changedParts, fmt.Sprintf("login method (%s -> %s)", currentMode, updated.AuthMode))
+		}
 		if !strings.EqualFold(acc.Username, updated.Username) {
 			changedParts = append(changedParts, fmt.Sprintf("username (%s -> %s)", acc.Username, updated.Username))
 		}
 		if acc.RecoveryEmail != updated.RecoveryEmail {
 			changedParts = append(changedParts, "recovery email")
 		}
-		if body.NewPassword != "" {
+		if newPassword != "" {
 			changedParts = append(changedParts, "password")
+		}
+		if newPasscode != "" {
+			changedParts = append(changedParts, "passcode")
 		}
 		if len(changedParts) == 0 {
 			changedParts = append(changedParts, "account profile confirmed")
@@ -1344,6 +1508,7 @@ func main() {
 			"ok":            true,
 			"token":         newToken,
 			"username":      updated.Username,
+			"authMode":      updated.AuthMode,
 			"recoveryEmail": updated.RecoveryEmail,
 			"message":       "Administrator credentials updated successfully.",
 		})
@@ -1361,7 +1526,9 @@ func main() {
 			return
 		}
 		var body struct {
-			CurrentPassword string `json:"currentPassword"`
+			CurrentCredential string `json:"currentCredential"`
+			CurrentPassword   string `json:"currentPassword"`
+			CurrentPasscode   string `json:"currentPasscode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "RECOVERY_KEY_FAILED", "Invalid JSON body during recovery key regeneration")
@@ -1369,9 +1536,14 @@ func main() {
 			return
 		}
 		acc, _ := GetAdminAccount()
-		if acc == nil || body.CurrentPassword == "" || !VerifyPasswordHash(body.CurrentPassword, acc.PasswordHash, acc.PasswordSalt) {
-			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "RECOVERY_KEY_FAILED", "Rejected recovery key regeneration: incorrect current password")
-			writeJSON(w, 401, map[string]any{"ok": false, "error": "Current password is incorrect."})
+		currentCred := defaultStr(body.CurrentCredential, defaultStr(body.CurrentPassword, body.CurrentPasscode))
+		if acc == nil || !VerifyAdminActiveCredential(acc, currentCred) {
+			credLabel := "password"
+			if acc != nil && normalizeAuthMode(acc.AuthMode) == "passcode" {
+				credLabel = "passcode"
+			}
+			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "RECOVERY_KEY_FAILED", fmt.Sprintf("Rejected recovery key regeneration: incorrect current %s", credLabel))
+			writeJSON(w, 401, map[string]any{"ok": false, "error": fmt.Sprintf("Current %s is incorrect.", credLabel)})
 			return
 		}
 		recKey, err := RegenerateAdminRecoveryKey()
@@ -1384,6 +1556,164 @@ func main() {
 		writeJSON(w, 200, map[string]any{
 			"ok":          true,
 			"recoveryKey": recKey,
+		})
+	}))
+
+	mux.HandleFunc("/api/auth/security", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		envConfigured := strings.TrimSpace(os.Getenv("NSSF_ADMIN_PASSCODE")) != ""
+		acc, _ := GetAdminAccount()
+		cfg, _ := GetRawSettings()
+		smtpConfigured := strings.TrimSpace(cfg.SMTPHost) != "" && strings.TrimSpace(cfg.SMTPUser) != "" && strings.TrimSpace(cfg.SMTPPass) != ""
+
+		authMode := "password"
+		username := actor
+		recoveryEmail := ""
+		hasRecoveryKey := false
+		updatedAt := ""
+		if envConfigured {
+			authMode = "passcode"
+		} else if acc != nil {
+			authMode = normalizeAuthMode(acc.AuthMode)
+			username = acc.Username
+			recoveryEmail = acc.RecoveryEmail
+			hasRecoveryKey = strings.TrimSpace(acc.RecoveryHash) != ""
+			updatedAt = acc.UpdatedAt
+		}
+
+		writeJSON(w, 200, map[string]any{
+			"ok":                    true,
+			"authMode":              authMode,
+			"username":              username,
+			"recoveryEmail":         recoveryEmail,
+			"hasRecoveryKey":        hasRecoveryKey,
+			"smtpConfigured":        smtpConfigured,
+			"envPasscodeConfigured": envConfigured,
+			"updatedAt":             updatedAt,
+			"policy":                GetSecurityPolicy(),
+			"activeSessionCount":    ActiveAdminSessionCount(),
+			"recentEvents":          GetRecentSecurityAuditLogs(8),
+		})
+	}))
+
+	mux.HandleFunc("/api/auth/security-policy", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ip := RealClientIP(r)
+		var body SecurityPolicy
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid JSON body."})
+			return
+		}
+		if body.SessionTTLMinutes < 15 || body.SessionTTLMinutes > 1440 {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Session lifetime must be between 15 and 1440 minutes."})
+			return
+		}
+		if body.MaxLoginAttempts < 3 || body.MaxLoginAttempts > 25 {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Max failed login attempts must be between 3 and 25."})
+			return
+		}
+		if body.LockoutMinutes < 1 || body.LockoutMinutes > 120 {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Lockout duration must be between 1 and 120 minutes."})
+			return
+		}
+		if body.IdleLockMinutes != 0 && (body.IdleLockMinutes < 5 || body.IdleLockMinutes > 120) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Idle auto-lock must be disabled (0) or between 5 and 120 minutes."})
+			return
+		}
+		saved, err := SaveSecurityPolicy(body)
+		if err != nil {
+			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "ERROR", "Failed saving security policy: "+err.Error())
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "Failed to save security policy."})
+			return
+		}
+		LogSystemAudit("AUTH", actor, ip, "SECURITY", "Security Policy", "", "SECURITY_POLICY_UPDATED", fmt.Sprintf("Updated session TTL (%dm), idle lock (%dm), and lockout (%d attempts / %dm)", saved.SessionTTLMinutes, saved.IdleLockMinutes, saved.MaxLoginAttempts, saved.LockoutMinutes))
+		writeJSON(w, 200, map[string]any{
+			"ok":      true,
+			"policy":  saved,
+			"message": "Security policy saved.",
+		})
+	}))
+
+	mux.HandleFunc("/api/auth/test-recovery-email", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ip := RealClientIP(r)
+		var body struct {
+			RecoveryEmail string `json:"recoveryEmail"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		acc, _ := GetAdminAccount()
+		targetEmail := strings.TrimSpace(body.RecoveryEmail)
+		if targetEmail == "" && acc != nil {
+			targetEmail = strings.TrimSpace(acc.RecoveryEmail)
+		}
+		if !emailRe.MatchString(targetEmail) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "Enter and save a valid recovery email address first."})
+			return
+		}
+		cfg, _ := GetRawSettings()
+		if strings.TrimSpace(cfg.SMTPHost) == "" || strings.TrimSpace(cfg.SMTPUser) == "" || strings.TrimSpace(cfg.SMTPPass) == "" {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": "SMTP host, username, and password must be configured in Settings before sending recovery emails."})
+			return
+		}
+		subject := fmt.Sprintf("%s — Recovery Email Verification Test", appName)
+		emailBody := fmt.Sprintf(
+			"NSSF Digital Statement Dispatch — Recovery Email Test\n\n"+
+				"This confirms that administrator password and passcode recovery emails can be delivered to %s.\n\n"+
+				"Requested by: %s\nTimestamp: %s",
+			targetEmail, actor, time.Now().Format("02 Jan 2006 15:04:05"),
+		)
+		if err := SendPlainTextEmail(cfg, targetEmail, subject, emailBody); err != nil {
+			LogSystemAudit("AUTH", actor, ip, "RECOVERY", targetEmail, "", "RECOVERY_TEST_FAILED", "Recovery email test failed: "+err.Error())
+			writeJSON(w, 502, map[string]any{"ok": false, "error": "SMTP failed to send test email: " + err.Error()})
+			return
+		}
+		LogSystemAudit("AUTH", actor, ip, "RECOVERY", targetEmail, "", "RECOVERY_TEST_OK", "Verified recovery email delivery to "+targetEmail)
+		writeJSON(w, 200, map[string]any{
+			"ok":      true,
+			"message": "Test recovery email sent to " + targetEmail + ".",
+		})
+	}))
+
+	mux.HandleFunc("/api/auth/revoke-sessions", RequireAdminAuth(func(w http.ResponseWriter, r *http.Request, actor string) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ip := RealClientIP(r)
+		var body struct {
+			IncludeCurrent bool `json:"includeCurrent"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.IncludeCurrent {
+			count := RevokeAllAdminSessions()
+			LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "SESSIONS_REVOKED", fmt.Sprintf("Signed out and revoked all %d active administrator session(s)", count))
+			writeJSON(w, 200, map[string]any{
+				"ok":                 true,
+				"signedOutCurrent":   true,
+				"revokedCount":       count,
+				"activeSessionCount": 0,
+				"message":            "All administrator sessions have been revoked.",
+			})
+			return
+		}
+		revoked := RevokeOtherAdminSessions(ExtractBearerToken(r))
+		remaining := ActiveAdminSessionCount()
+		LogSystemAudit("AUTH", actor, ip, "SECURITY", ip, "", "SESSIONS_REVOKED", fmt.Sprintf("Revoked %d other administrator session(s)", revoked))
+		writeJSON(w, 200, map[string]any{
+			"ok":                 true,
+			"signedOutCurrent":   false,
+			"revokedCount":       revoked,
+			"activeSessionCount": remaining,
+			"message":            fmt.Sprintf("Signed out %d other session(s).", revoked),
 		})
 	}))
 

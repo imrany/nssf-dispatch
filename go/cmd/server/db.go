@@ -87,14 +87,24 @@ type AuditEvent struct {
 }
 
 type AdminAccount struct {
+	AuthMode      string `json:"authMode"`
 	Username      string `json:"username"`
 	PasswordHash  string `json:"passwordHash"`
 	PasswordSalt  string `json:"passwordSalt"`
+	PasscodeHash  string `json:"passcodeHash"`
+	PasscodeSalt  string `json:"passcodeSalt"`
 	RecoveryEmail string `json:"recoveryEmail"`
 	RecoveryHash  string `json:"recoveryHash"`
 	RecoverySalt  string `json:"recoverySalt"`
 	CreatedAt     string `json:"createdAt"`
 	UpdatedAt     string `json:"updatedAt"`
+}
+
+type SecurityPolicy struct {
+	SessionTTLMinutes int `json:"sessionTtlMinutes"`
+	MaxLoginAttempts  int `json:"maxLoginAttempts"`
+	LockoutMinutes    int `json:"lockoutMinutes"`
+	IdleLockMinutes   int `json:"idleLockMinutes"`
 }
 
 type jsonFallbackState struct {
@@ -260,8 +270,12 @@ func defaultSettingsMap() map[string]string {
 		"previewBeforeDispatch":   "true",
 		"emailSubjectTemplate":    DefaultEmailSubjectTemplate,
 		"whatsappMessageTemplate": DefaultWhatsAppMessageTemplate,
-		"autoUpdateEnabled":       "true",
-		"updateRepo":              "",
+		"autoUpdateEnabled":         "true",
+		"updateRepo":                "",
+		"securitySessionTtlMinutes": "480",
+		"securityMaxLoginAttempts":  "10",
+		"securityLockoutMinutes":    "15",
+		"securityIdleLockMinutes":   "0",
 	}
 }
 
@@ -376,9 +390,12 @@ func InitDB() error {
 	);
 	CREATE TABLE IF NOT EXISTS admin_users (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
+		auth_mode TEXT NOT NULL DEFAULT 'password',
 		username TEXT NOT NULL,
-		password_hash TEXT NOT NULL,
-		password_salt TEXT NOT NULL,
+		password_hash TEXT NOT NULL DEFAULT '',
+		password_salt TEXT NOT NULL DEFAULT '',
+		passcode_hash TEXT NOT NULL DEFAULT '',
+		passcode_salt TEXT NOT NULL DEFAULT '',
 		recovery_email TEXT NOT NULL DEFAULT '',
 		recovery_hash TEXT NOT NULL DEFAULT '',
 		recovery_salt TEXT NOT NULL DEFAULT '',
@@ -419,6 +436,9 @@ func InitDB() error {
 			col string
 			ddl string
 		}{
+			{"auth_mode", "ALTER TABLE admin_users ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'password';"},
+			{"passcode_hash", "ALTER TABLE admin_users ADD COLUMN passcode_hash TEXT NOT NULL DEFAULT '';"},
+			{"passcode_salt", "ALTER TABLE admin_users ADD COLUMN passcode_salt TEXT NOT NULL DEFAULT '';"},
 			{"recovery_email", "ALTER TABLE admin_users ADD COLUMN recovery_email TEXT NOT NULL DEFAULT '';"},
 			{"recovery_hash", "ALTER TABLE admin_users ADD COLUMN recovery_hash TEXT NOT NULL DEFAULT '';"},
 			{"recovery_salt", "ALTER TABLE admin_users ADD COLUMN recovery_salt TEXT NOT NULL DEFAULT '';"},
@@ -853,6 +873,13 @@ func GetAuditLogs() ([]AuditLog, error) {
 	return logs, nil
 }
 
+func normalizeAuthMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "passcode") {
+		return "passcode"
+	}
+	return "password"
+}
+
 func GetAdminAccount() (*AdminAccount, error) {
 	if !hasSQLiteCLI() {
 		dbMu.Lock()
@@ -862,29 +889,35 @@ func GetAdminAccount() (*AdminAccount, error) {
 			return nil, nil
 		}
 		cp := *fallbackState.Admin
+		cp.AuthMode = normalizeAuthMode(cp.AuthMode)
 		return &cp, nil
 	}
 
-	raw, err := runSQL(`SELECT hex(COALESCE(username, '')), hex(COALESCE(password_hash, '')), hex(COALESCE(password_salt, '')),
+	raw, err := runSQL(`SELECT hex(COALESCE(NULLIF(auth_mode, ''), 'password')), hex(COALESCE(username, '')),
+		hex(COALESCE(password_hash, '')), hex(COALESCE(password_salt, '')),
+		hex(COALESCE(passcode_hash, '')), hex(COALESCE(passcode_salt, '')),
 		hex(COALESCE(recovery_email, '')), hex(COALESCE(recovery_hash, '')), hex(COALESCE(recovery_salt, '')),
 		hex(COALESCE(created_at, '')), hex(COALESCE(updated_at, '')) FROM admin_users WHERE id = 1;`)
 	if err != nil || raw == "" {
 		return nil, err
 	}
-	rows := splitPipeRows(raw, 8)
+	rows := splitPipeRows(raw, 11)
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	cols := rows[0]
 	return &AdminAccount{
-		Username:      decodeHexField(cols[0]),
-		PasswordHash:  decodeHexField(cols[1]),
-		PasswordSalt:  decodeHexField(cols[2]),
-		RecoveryEmail: decodeHexField(cols[3]),
-		RecoveryHash:  decodeHexField(cols[4]),
-		RecoverySalt:  decodeHexField(cols[5]),
-		CreatedAt:     decodeHexField(cols[6]),
-		UpdatedAt:     decodeHexField(cols[7]),
+		AuthMode:      normalizeAuthMode(decodeHexField(cols[0])),
+		Username:      decodeHexField(cols[1]),
+		PasswordHash:  decodeHexField(cols[2]),
+		PasswordSalt:  decodeHexField(cols[3]),
+		PasscodeHash:  decodeHexField(cols[4]),
+		PasscodeSalt:  decodeHexField(cols[5]),
+		RecoveryEmail: decodeHexField(cols[6]),
+		RecoveryHash:  decodeHexField(cols[7]),
+		RecoverySalt:  decodeHexField(cols[8]),
+		CreatedAt:     decodeHexField(cols[9]),
+		UpdatedAt:     decodeHexField(cols[10]),
 	}, nil
 }
 
@@ -893,10 +926,21 @@ func HasAdminAccount() bool {
 	return acc != nil
 }
 
-func CreateInitialAdmin(username, password, recoveryEmail string) (*AdminAccount, string, error) {
+func CreateInitialAdmin(authMode, username, password, passcode, recoveryEmail string) (*AdminAccount, string, error) {
+	mode := normalizeAuthMode(authMode)
 	cleanUser := strings.TrimSpace(username)
+	if mode == "passcode" && cleanUser == "" {
+		cleanUser = "admin"
+	}
 	cleanEmail := strings.TrimSpace(recoveryEmail)
-	hashHex, saltHex := HashPasswordWithSalt(password)
+
+	var passHash, passSalt, codeHash, codeSalt string
+	if mode == "passcode" {
+		codeHash, codeSalt = HashPasswordWithSalt(passcode)
+	} else {
+		passHash, passSalt = HashPasswordWithSalt(password)
+	}
+
 	recoveryKey := GenerateRecoveryKey()
 	recHash, recSalt := HashPasswordWithSalt(NormalizeRecoveryKey(recoveryKey))
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
@@ -909,9 +953,12 @@ func CreateInitialAdmin(username, password, recoveryEmail string) (*AdminAccount
 			return nil, "", fmt.Errorf("administrator account already exists")
 		}
 		fallbackState.Admin = &AdminAccount{
+			AuthMode:      mode,
 			Username:      cleanUser,
-			PasswordHash:  hashHex,
-			PasswordSalt:  saltHex,
+			PasswordHash:  passHash,
+			PasswordSalt:  passSalt,
+			PasscodeHash:  codeHash,
+			PasscodeSalt:  codeSalt,
 			RecoveryEmail: cleanEmail,
 			RecoveryHash:  recHash,
 			RecoverySalt:  recSalt,
@@ -925,9 +972,9 @@ func CreateInitialAdmin(username, password, recoveryEmail string) (*AdminAccount
 		return &cp, recoveryKey, nil
 	}
 
-	q := fmt.Sprintf(`INSERT INTO admin_users (id, username, password_hash, password_salt, recovery_email, recovery_hash, recovery_salt, updated_at)
-		VALUES (1, %s, %s, %s, %s, %s, %s, datetime('now', 'localtime'));`,
-		sqlLit(cleanUser), sqlLit(hashHex), sqlLit(saltHex), sqlLit(cleanEmail), sqlLit(recHash), sqlLit(recSalt))
+	q := fmt.Sprintf(`INSERT INTO admin_users (id, auth_mode, username, password_hash, password_salt, passcode_hash, passcode_salt, recovery_email, recovery_hash, recovery_salt, updated_at)
+		VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, %s, datetime('now', 'localtime'));`,
+		sqlLit(mode), sqlLit(cleanUser), sqlLit(passHash), sqlLit(passSalt), sqlLit(codeHash), sqlLit(codeSalt), sqlLit(cleanEmail), sqlLit(recHash), sqlLit(recSalt))
 	if _, err := runSQL(q); err != nil {
 		return nil, "", err
 	}
@@ -952,9 +999,12 @@ func UpsertAdminFromCLI(username, password, recoveryEmail string) (*AdminAccount
 			createdAt = fallbackState.Admin.CreatedAt
 		}
 		fallbackState.Admin = &AdminAccount{
+			AuthMode:      "password",
 			Username:      cleanUser,
 			PasswordHash:  hashHex,
 			PasswordSalt:  saltHex,
+			PasscodeHash:  "",
+			PasscodeSalt:  "",
 			RecoveryEmail: cleanEmail,
 			RecoveryHash:  recHash,
 			RecoverySalt:  recSalt,
@@ -968,8 +1018,8 @@ func UpsertAdminFromCLI(username, password, recoveryEmail string) (*AdminAccount
 		return &cp, recoveryKey, nil
 	}
 
-	q := fmt.Sprintf(`INSERT OR REPLACE INTO admin_users (id, username, password_hash, password_salt, recovery_email, recovery_hash, recovery_salt, updated_at)
-		VALUES (1, %s, %s, %s, %s, %s, %s, datetime('now', 'localtime'));`,
+	q := fmt.Sprintf(`INSERT OR REPLACE INTO admin_users (id, auth_mode, username, password_hash, password_salt, passcode_hash, passcode_salt, recovery_email, recovery_hash, recovery_salt, updated_at)
+		VALUES (1, 'password', %s, %s, %s, '', '', %s, %s, %s, datetime('now', 'localtime'));`,
 		sqlLit(cleanUser), sqlLit(hashHex), sqlLit(saltHex), sqlLit(cleanEmail), sqlLit(recHash), sqlLit(recSalt))
 	if _, err := runSQL(q); err != nil {
 		return nil, "", err
@@ -978,7 +1028,8 @@ func UpsertAdminFromCLI(username, password, recoveryEmail string) (*AdminAccount
 	return acc, recoveryKey, err
 }
 
-func UpdateAdminCredentials(newUsername, recoveryEmail, newPassword string) (*AdminAccount, error) {
+func UpdateAdminCredentials(authMode, newUsername, recoveryEmail, newPassword, newPasscode string) (*AdminAccount, error) {
+	mode := normalizeAuthMode(authMode)
 	cleanUser := strings.TrimSpace(newUsername)
 	cleanEmail := strings.TrimSpace(recoveryEmail)
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
@@ -990,13 +1041,33 @@ func UpdateAdminCredentials(newUsername, recoveryEmail, newPassword string) (*Ad
 		if fallbackState.Admin == nil {
 			return nil, fmt.Errorf("administrator account not found")
 		}
-		fallbackState.Admin.Username = cleanUser
+		if cleanUser != "" {
+			fallbackState.Admin.Username = cleanUser
+		} else if fallbackState.Admin.Username == "" {
+			fallbackState.Admin.Username = "admin"
+		}
+		fallbackState.Admin.AuthMode = mode
 		fallbackState.Admin.RecoveryEmail = cleanEmail
 		fallbackState.Admin.UpdatedAt = nowStr
-		if newPassword != "" {
-			h, s := HashPasswordWithSalt(newPassword)
-			fallbackState.Admin.PasswordHash = h
-			fallbackState.Admin.PasswordSalt = s
+
+		if mode == "passcode" {
+			// Exclusive: clear password credentials when passcode mode is selected
+			fallbackState.Admin.PasswordHash = ""
+			fallbackState.Admin.PasswordSalt = ""
+			if newPasscode != "" {
+				h, s := HashPasswordWithSalt(newPasscode)
+				fallbackState.Admin.PasscodeHash = h
+				fallbackState.Admin.PasscodeSalt = s
+			}
+		} else {
+			// Exclusive: clear passcode credentials when username & password mode is selected
+			fallbackState.Admin.PasscodeHash = ""
+			fallbackState.Admin.PasscodeSalt = ""
+			if newPassword != "" {
+				h, s := HashPasswordWithSalt(newPassword)
+				fallbackState.Admin.PasswordHash = h
+				fallbackState.Admin.PasswordSalt = s
+			}
 		}
 		if err := saveFallbackLocked(); err != nil {
 			return nil, err
@@ -1005,15 +1076,35 @@ func UpdateAdminCredentials(newUsername, recoveryEmail, newPassword string) (*Ad
 		return &cp, nil
 	}
 
-	var q string
-	if newPassword != "" {
-		h, s := HashPasswordWithSalt(newPassword)
-		q = fmt.Sprintf(`UPDATE admin_users SET username = %s, recovery_email = %s, password_hash = %s, password_salt = %s, updated_at = datetime('now', 'localtime') WHERE id = 1;`,
-			sqlLit(cleanUser), sqlLit(cleanEmail), sqlLit(h), sqlLit(s))
-	} else {
-		q = fmt.Sprintf(`UPDATE admin_users SET username = %s, recovery_email = %s, updated_at = datetime('now', 'localtime') WHERE id = 1;`,
-			sqlLit(cleanUser), sqlLit(cleanEmail))
+	acc, err := GetAdminAccount()
+	if err != nil || acc == nil {
+		return nil, fmt.Errorf("administrator account not found")
 	}
+	if cleanUser == "" {
+		cleanUser = defaultStr(acc.Username, "admin")
+	}
+
+	passHash := acc.PasswordHash
+	passSalt := acc.PasswordSalt
+	codeHash := acc.PasscodeHash
+	codeSalt := acc.PasscodeSalt
+
+	if mode == "passcode" {
+		passHash = ""
+		passSalt = ""
+		if newPasscode != "" {
+			codeHash, codeSalt = HashPasswordWithSalt(newPasscode)
+		}
+	} else {
+		codeHash = ""
+		codeSalt = ""
+		if newPassword != "" {
+			passHash, passSalt = HashPasswordWithSalt(newPassword)
+		}
+	}
+
+	q := fmt.Sprintf(`UPDATE admin_users SET auth_mode = %s, username = %s, recovery_email = %s, password_hash = %s, password_salt = %s, passcode_hash = %s, passcode_salt = %s, updated_at = datetime('now', 'localtime') WHERE id = 1;`,
+		sqlLit(mode), sqlLit(cleanUser), sqlLit(cleanEmail), sqlLit(passHash), sqlLit(passSalt), sqlLit(codeHash), sqlLit(codeSalt))
 	if _, err := runSQL(q); err != nil {
 		return nil, err
 	}
@@ -1031,13 +1122,42 @@ func UpdateAdminPassword(newPassword string) error {
 		if fallbackState.Admin == nil {
 			return fmt.Errorf("administrator account not found")
 		}
+		fallbackState.Admin.AuthMode = "password"
 		fallbackState.Admin.PasswordHash = h
 		fallbackState.Admin.PasswordSalt = s
+		fallbackState.Admin.PasscodeHash = ""
+		fallbackState.Admin.PasscodeSalt = ""
 		fallbackState.Admin.UpdatedAt = nowStr
 		return saveFallbackLocked()
 	}
 
-	q := fmt.Sprintf(`UPDATE admin_users SET password_hash = %s, password_salt = %s, updated_at = datetime('now', 'localtime') WHERE id = 1;`,
+	q := fmt.Sprintf(`UPDATE admin_users SET auth_mode = 'password', password_hash = %s, password_salt = %s, passcode_hash = '', passcode_salt = '', updated_at = datetime('now', 'localtime') WHERE id = 1;`,
+		sqlLit(h), sqlLit(s))
+	_, err := runSQL(q)
+	return err
+}
+
+func UpdateAdminPasscode(newPasscode string) error {
+	h, s := HashPasswordWithSalt(newPasscode)
+	nowStr := time.Now().Format("2006-01-02 15:04:05")
+
+	if !hasSQLiteCLI() {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+		loadFallbackLocked()
+		if fallbackState.Admin == nil {
+			return fmt.Errorf("administrator account not found")
+		}
+		fallbackState.Admin.AuthMode = "passcode"
+		fallbackState.Admin.PasscodeHash = h
+		fallbackState.Admin.PasscodeSalt = s
+		fallbackState.Admin.PasswordHash = ""
+		fallbackState.Admin.PasswordSalt = ""
+		fallbackState.Admin.UpdatedAt = nowStr
+		return saveFallbackLocked()
+	}
+
+	q := fmt.Sprintf(`UPDATE admin_users SET auth_mode = 'passcode', passcode_hash = %s, passcode_salt = %s, password_hash = '', password_salt = '', updated_at = datetime('now', 'localtime') WHERE id = 1;`,
 		sqlLit(h), sqlLit(s))
 	_, err := runSQL(q)
 	return err
@@ -1074,7 +1194,7 @@ func RegenerateAdminRecoveryKey() (string, error) {
 
 func VerifyStoredAdminCredentials(username, password string) (bool, string) {
 	acc, _ := GetAdminAccount()
-	if acc == nil {
+	if acc == nil || normalizeAuthMode(acc.AuthMode) != "password" || acc.PasswordHash == "" || acc.PasswordSalt == "" {
 		return false, ""
 	}
 	if !strings.EqualFold(strings.TrimSpace(acc.Username), strings.TrimSpace(username)) {
@@ -1086,12 +1206,23 @@ func VerifyStoredAdminCredentials(username, password string) (bool, string) {
 	return true, acc.Username
 }
 
+func VerifyStoredAdminPasscode(passcode string) (bool, string) {
+	acc, _ := GetAdminAccount()
+	if acc == nil || normalizeAuthMode(acc.AuthMode) != "passcode" || acc.PasscodeHash == "" || acc.PasscodeSalt == "" {
+		return false, ""
+	}
+	if passcode == "" || !VerifyPasswordHash(passcode, acc.PasscodeHash, acc.PasscodeSalt) {
+		return false, ""
+	}
+	return true, defaultStr(acc.Username, "admin")
+}
+
 func VerifyAdminRecoveryKey(username, recoveryKey string) bool {
 	acc, _ := GetAdminAccount()
 	if acc == nil || acc.RecoveryHash == "" || acc.RecoverySalt == "" {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(acc.Username), strings.TrimSpace(username)) {
+	if normalizeAuthMode(acc.AuthMode) != "passcode" && !strings.EqualFold(strings.TrimSpace(acc.Username), strings.TrimSpace(username)) {
 		return false
 	}
 	norm := NormalizeRecoveryKey(recoveryKey)
@@ -1099,4 +1230,120 @@ func VerifyAdminRecoveryKey(username, recoveryKey string) bool {
 		return false
 	}
 	return VerifyPasswordHash(norm, acc.RecoveryHash, acc.RecoverySalt)
+}
+
+func clampInt(v, minVal, maxVal, fallback int) int {
+	if v < minVal || v > maxVal {
+		return fallback
+	}
+	return v
+}
+
+func GetSecurityPolicy() SecurityPolicy {
+	policy := SecurityPolicy{
+		SessionTTLMinutes: 480,
+		MaxLoginAttempts:  10,
+		LockoutMinutes:    15,
+		IdleLockMinutes:   0,
+	}
+
+	readMap := func(m map[string]string) {
+		if v, err := strconv.Atoi(strings.TrimSpace(m["securitySessionTtlMinutes"])); err == nil {
+			policy.SessionTTLMinutes = clampInt(v, 15, 1440, 480)
+		}
+		if v, err := strconv.Atoi(strings.TrimSpace(m["securityMaxLoginAttempts"])); err == nil {
+			policy.MaxLoginAttempts = clampInt(v, 3, 25, 10)
+		}
+		if v, err := strconv.Atoi(strings.TrimSpace(m["securityLockoutMinutes"])); err == nil {
+			policy.LockoutMinutes = clampInt(v, 1, 120, 15)
+		}
+		if v, err := strconv.Atoi(strings.TrimSpace(m["securityIdleLockMinutes"])); err == nil {
+			if v == 0 {
+				policy.IdleLockMinutes = 0
+			} else {
+				policy.IdleLockMinutes = clampInt(v, 5, 120, 0)
+			}
+		}
+	}
+
+	if !hasSQLiteCLI() {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+		loadFallbackLocked()
+		readMap(fallbackState.Settings)
+		return policy
+	}
+
+	raw, err := runSQL(`SELECT hex(COALESCE(key, '')), hex(COALESCE(value, '')) FROM settings WHERE key IN ('securitySessionTtlMinutes', 'securityMaxLoginAttempts', 'securityLockoutMinutes', 'securityIdleLockMinutes');`)
+	if err != nil {
+		return policy
+	}
+	m := map[string]string{}
+	for _, cols := range splitPipeRows(raw, 2) {
+		m[decodeHexField(cols[0])] = decodeHexField(cols[1])
+	}
+	readMap(m)
+	return policy
+}
+
+func SaveSecurityPolicy(input SecurityPolicy) (SecurityPolicy, error) {
+	idleVal := 0
+	if input.IdleLockMinutes > 0 {
+		idleVal = clampInt(input.IdleLockMinutes, 5, 120, 15)
+	}
+	normalized := SecurityPolicy{
+		SessionTTLMinutes: clampInt(input.SessionTTLMinutes, 15, 1440, 480),
+		MaxLoginAttempts:  clampInt(input.MaxLoginAttempts, 3, 25, 10),
+		LockoutMinutes:    clampInt(input.LockoutMinutes, 1, 120, 15),
+		IdleLockMinutes:   idleVal,
+	}
+
+	pairs := map[string]string{
+		"securitySessionTtlMinutes": strconv.Itoa(normalized.SessionTTLMinutes),
+		"securityMaxLoginAttempts":  strconv.Itoa(normalized.MaxLoginAttempts),
+		"securityLockoutMinutes":    strconv.Itoa(normalized.LockoutMinutes),
+		"securityIdleLockMinutes":   strconv.Itoa(normalized.IdleLockMinutes),
+	}
+
+	if !hasSQLiteCLI() {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+		loadFallbackLocked()
+		for k, v := range pairs {
+			fallbackState.Settings[k] = v
+		}
+		if err := saveFallbackLocked(); err != nil {
+			return SecurityPolicy{}, err
+		}
+		return normalized, nil
+	}
+
+	var sb strings.Builder
+	for k, v := range pairs {
+		fmt.Fprintf(&sb, "INSERT OR REPLACE INTO settings (key, value) VALUES (%s, %s);\n", sqlLit(k), sqlLit(v))
+	}
+	if _, err := runSQL(sb.String()); err != nil {
+		return SecurityPolicy{}, err
+	}
+	return normalized, nil
+}
+
+func GetRecentSecurityAuditLogs(limit int) []AuditLog {
+	if limit <= 0 {
+		limit = 8
+	}
+	all, err := GetAuditLogs()
+	if err != nil {
+		return []AuditLog{}
+	}
+	out := make([]AuditLog, 0, limit)
+	for _, entry := range all {
+		if strings.EqualFold(entry.EventType, "AUTH") || strings.EqualFold(entry.Channel, "SECURITY") || strings.EqualFold(entry.Channel, "RECOVERY") || strings.EqualFold(entry.Channel, "LOGIN") {
+			out = append(out, entry)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
 }

@@ -1,9 +1,12 @@
 import type {
+  AdminAuthMode,
   AdminAuthStatus,
   AppSettings,
   AuditLog,
   DispatchChannel,
   DispatchReceipt,
+  SecurityOverview,
+  SecurityPolicy,
   SystemRuntimeInfo,
   SystemUpdateStatus,
   ValidationResponse,
@@ -158,39 +161,46 @@ export function fetchAuthStatusApi(): Promise<AdminAuthStatus> {
   return requestJson<AdminAuthStatus>('/api/auth/status');
 }
 
-export function setupAdminApi(
-  username: string,
-  password: string,
-  recoveryEmail = ''
-): Promise<{
+export function setupAdminApi(params: {
+  authMode: AdminAuthMode;
+  username?: string;
+  password?: string;
+  passcode?: string;
+  recoveryEmail?: string;
+}): Promise<{
   ok: boolean;
   token: string;
   username: string;
+  authMode: AdminAuthMode;
   recoveryEmail?: string;
   recoveryKey?: string;
+  idleLockMinutes?: number;
   settings: AppSettings;
 }> {
   return requestJson('/api/auth/setup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, recoveryEmail }),
+    body: JSON.stringify(params),
   });
 }
 
-export function loginAdminApi(
-  username: string,
-  password: string
-): Promise<{
+export function loginAdminApi(params: {
+  username?: string;
+  password?: string;
+  passcode?: string;
+}): Promise<{
   ok: boolean;
   token: string;
   username: string;
+  authMode?: AdminAuthMode;
   recoveryEmail?: string;
+  idleLockMinutes?: number;
   settings: AppSettings;
 }> {
   return requestJson('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify(params),
   });
 }
 
@@ -207,10 +217,11 @@ export function forgotPasswordApi(
 
 export function resetPasswordApi(params: {
   method: 'email_code' | 'recovery_key';
-  username: string;
+  username?: string;
   code?: string;
   recoveryKey?: string;
-  newPassword: string;
+  newPassword?: string;
+  newPasscode?: string;
 }): Promise<{ ok: boolean; message: string }> {
   return requestJson('/api/auth/reset-password', {
     method: 'POST',
@@ -222,15 +233,18 @@ export function resetPasswordApi(params: {
 export function changeAdminCredentialsApi(
   token: string,
   params: {
-    currentPassword: string;
-    newUsername: string;
+    authMode: AdminAuthMode;
+    currentCredential: string;
+    newUsername?: string;
     recoveryEmail: string;
     newPassword?: string;
+    newPasscode?: string;
   }
 ): Promise<{
   ok: boolean;
   token: string;
   username: string;
+  authMode: AdminAuthMode;
   recoveryEmail: string;
   message: string;
 }> {
@@ -244,13 +258,59 @@ export function changeAdminCredentialsApi(
 
 export function regenerateRecoveryKeyApi(
   token: string,
-  currentPassword: string
+  currentCredential: string
 ): Promise<{ ok: boolean; recoveryKey: string }> {
   return requestJson('/api/auth/regenerate-recovery-key', {
     method: 'POST',
     token,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ currentPassword }),
+    body: JSON.stringify({ currentCredential }),
+  });
+}
+
+export function fetchSecurityOverviewApi(token: string): Promise<SecurityOverview> {
+  return requestJson<SecurityOverview>('/api/auth/security', { token });
+}
+
+export function saveSecurityPolicyApi(
+  token: string,
+  policy: SecurityPolicy
+): Promise<{ ok: boolean; policy: SecurityPolicy; message: string }> {
+  return requestJson('/api/auth/security-policy', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(policy),
+  });
+}
+
+export function testRecoveryEmailApi(
+  token: string,
+  recoveryEmail?: string
+): Promise<{ ok: boolean; message: string }> {
+  return requestJson('/api/auth/test-recovery-email', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recoveryEmail: recoveryEmail || '' }),
+  });
+}
+
+export function revokeAdminSessionsApi(
+  token: string,
+  includeCurrent: boolean
+): Promise<{
+  ok: boolean;
+  signedOutCurrent: boolean;
+  revokedCount: number;
+  activeSessionCount: number;
+  message: string;
+}> {
+  return requestJson('/api/auth/revoke-sessions', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ includeCurrent }),
   });
 }
 

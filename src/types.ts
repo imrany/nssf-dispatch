@@ -151,13 +151,38 @@ export type PendingSettingsAction =
   | { type: 'browser_reload' }
   | { type: 'lock_settings' };
 
+export type AdminAuthMode = 'password' | 'passcode';
+
 export interface AdminAuthStatus {
   adminExists: boolean;
   authenticated: boolean;
   username: string | null;
+  authMode?: AdminAuthMode;
   envPasscodeConfigured: boolean;
   hasRecoveryEmail?: boolean;
   hasRecoveryKey?: boolean;
   smtpConfigured?: boolean;
   recoveryEmail?: string | null;
+  idleLockMinutes?: number | null;
+}
+
+export interface SecurityPolicy {
+  sessionTtlMinutes: number;
+  maxLoginAttempts: number;
+  lockoutMinutes: number;
+  idleLockMinutes: number;
+}
+
+export interface SecurityOverview {
+  ok: boolean;
+  authMode: AdminAuthMode;
+  username: string;
+  recoveryEmail: string;
+  hasRecoveryKey: boolean;
+  smtpConfigured: boolean;
+  envPasscodeConfigured: boolean;
+  updatedAt?: string;
+  policy: SecurityPolicy;
+  activeSessionCount: number;
+  recentEvents: AuditLog[];
 }
